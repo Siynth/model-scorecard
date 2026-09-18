@@ -5,9 +5,9 @@
 // persist across every project and every platform.
 //
 //   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \
-//                         [--complexity <S|M|L>] --delta <-2..2> [--note "..."]
+//                         [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
 //   scorecard.mjs show    [--since D] [--until D] [--depth N] [--min-n k] [--csv]
-//   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] \
+//   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] \
 //                         [--depth N] [--since D] [--until D]
 //   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \
 //                         [--effort-default e] [--default-depth N] [--min-n k] [--reset]
@@ -85,29 +85,31 @@ function cmdShow(argv) {
   }
   const pad = (s, n) => String(s).padEnd(n);
   const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
-  console.log(pad("model@effort · tier", 40) + "avg Δ    n   by complexity" + depthNote);
-  console.log("-".repeat(74));
+  console.log(pad("model@effort · tier", 40) + pad("avg Δ", 8) + pad("n", 4) + pad("age", 15) + "by complexity" + depthNote);
+  console.log("-".repeat(82));
   for (const r of scored) {
     const comp = Object.entries(r.comp).map(([c, n]) => `${c}:${n}`).join(" ");
     const flag = r.lowConfidence ? "  ⚠ low-n" : "";
-    console.log(pad(r.key, 40) + pad(signed(r.avg), 8) + pad(r.n, 4) + comp + flag);
+    const ageStr = r.ageMonths == null ? "-" : `${r.ageMonths}mo ${r.ageTier}`;
+    console.log(pad(r.key, 40) + pad(signed(r.avg), 8) + pad(r.n, 4) + pad(ageStr, 15) + comp + flag);
   }
   if (!scored.length) console.log("(no rows yet)");
   console.log(`\nRead WITHIN a bucket only. ~0 = correctly tiered; + = beats tier; - = underperforms.`);
+  console.log(`age = months since the model's knowledge cutoff (fresh <3 · recent <9 · aging <18 · stale); '-' = unknown.`);
   console.log(`⚠ low-n = fewer than ${minN} ratings; treat as indicative only.`);
   if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
 }
 
 // --- compare ----------------------------------------------------------------
 function cmdCompare(argv) {
-  const { opts, positional: models } = parseArgs(argv, ["global", "by-complexity"]);
+  const { opts, positional: models } = parseArgs(argv, ["global", "by-complexity", "by-age"]);
   if (models.length < 2) {
-    console.error("give 2+ model names to compare, optionally --global / --by-complexity");
+    console.error("give 2+ model names to compare, optionally --global / --by-complexity / --by-age");
     process.exit(1);
   }
   const config = readConfig();
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
-  const groupBy = opts["by-complexity"] ? "complexity" : "tier";
+  const groupBy = opts["by-complexity"] ? "complexity" : opts["by-age"] ? "age" : "tier";
   const { rows: parsed, missing } = readRows();
   if (missing) {
     console.log("no scorecard data yet");
@@ -118,7 +120,7 @@ function cmdCompare(argv) {
   const groups = groupsOf(data, models);
 
   const pad = (s, n) => String(s).padEnd(n);
-  const axis = groupBy === "complexity" ? "complexity" : "tier";
+  const axis = groupBy === "complexity" ? "complexity" : groupBy === "age" ? "age" : "tier";
   console.log(pad(axis, 26) + models.map((m) => pad(m, 16)).join(""));
   console.log("-".repeat(26 + 16 * models.length));
   for (const g of groups) {
@@ -177,16 +179,19 @@ function cmdConfig(argv) {
 const HELP = `model-scorecard — rate subagent models vs. expectation, per (model x tier).
 
   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \\
-                        [--complexity <S|M|L>] --delta <-2..2> [--note "..."]
+                        [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
   scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv]
-  scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--depth <N>] [--since D] [--until D]
+  scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since D] [--until D]
   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \\
                         [--effort-default e] [--default-depth N] [--min-n k] [--reset]
 
 Δ: -2 well below .. +2 well above expectation; 0 = met (correctly tiered, not mediocre).
 Model names are free-form AND hierarchical — "5.6 sol"/"5.6 terra" roll up under
 "5.6" at a shallower --depth. --depth 0 (default) = full name (most specific).
-Effort default/floor/max are set with \`config\`, not baked in.`;
+--cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01) gives the
+model a knowledge-cutoff date; show/compare derive age (fresh/recent/aging/stale)
+from it against today — all local, no provider API. Effort default/floor/max are
+set with \`config\`, not baked in.`;
 
 switch (sub) {
   case "log": cmdLog(rest); break;

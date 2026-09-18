@@ -6,6 +6,7 @@ import {
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
   DEFAULT_CONFIG, normalizeConfig, resolveEffort,
   modelParts, modelSegments, modelAtDepth, bucketKey,
+  normalizeCutoff, parseNameDate, resolveCutoff, ageMonths, ageTier,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -118,6 +119,93 @@ test("bucketKey: groups variants together at a shallow depth", () => {
   const terra = { model: "5.6 terra", effort: "", tier: "orchestration" };
   assert.notEqual(bucketKey(sol, 0), bucketKey(terra, 0)); // specific: distinct
   assert.equal(bucketKey(sol, 1), bucketKey(terra, 1));    // general: same "5.6" bucket
+});
+
+// --- model age / knowledge cutoff -------------------------------------------
+test("normalizeCutoff: accepts YYYY-MM and YYYY-MM-DD, rejects malformed", () => {
+  assert.equal(normalizeCutoff("2026-06"), "2026-06");
+  assert.equal(normalizeCutoff(" 2026-06-15 "), "2026-06-15");
+  assert.equal(normalizeCutoff(""), "");
+  assert.equal(normalizeCutoff(null), "");
+  assert.throws(() => normalizeCutoff("2026"), /YYYY-MM/);
+  assert.throws(() => normalizeCutoff("2026/06"), /YYYY-MM/);
+  assert.throws(() => normalizeCutoff("2026-13"), /invalid month/);
+  assert.throws(() => normalizeCutoff("2026-06-40"), /invalid day/);
+});
+
+test("parseNameDate: detects hyphenated and compact dates, lenient otherwise", () => {
+  assert.equal(parseNameDate("gpt-5.6-2026-01"), "2026-01");
+  assert.equal(parseNameDate("claude-sonnet-20241022"), "2024-10-22");
+  assert.equal(parseNameDate("gpt-4o-2024-08-06"), "2024-08-06");
+  assert.equal(parseNameDate("5.6 sol"), ""); // no date-shaped part
+  assert.equal(parseNameDate("1234-56"), ""); // invalid month -> not a date
+  assert.equal(parseNameDate(""), "");
+});
+
+test("resolveCutoff: explicit wins over name-parsed, falls back to name", () => {
+  assert.equal(resolveCutoff("2025-01", "gpt-5.6-2026-01"), "2025-01"); // explicit override
+  assert.equal(resolveCutoff("", "gpt-5.6-2026-01"), "2026-01"); // parsed from name
+  assert.equal(resolveCutoff("", "5.6 sol"), ""); // nothing to derive
+  assert.throws(() => resolveCutoff("bogus", "m"), /YYYY-MM/); // malformed explicit still throws
+});
+
+test("ageMonths / ageTier: month diff and coarse tiers", () => {
+  const now = new Date("2026-09-18T00:00:00Z");
+  assert.equal(ageMonths("2026-08", now), 1);
+  assert.equal(ageMonths("2026-06", now), 3);
+  assert.equal(ageMonths("2025-09", now), 12);
+  assert.equal(ageMonths("2099-01", now), 0); // future clamps to 0
+  assert.equal(ageMonths("", now), null);
+  assert.equal(ageMonths(null, now), null);
+  assert.equal(ageTier(0), "fresh");
+  assert.equal(ageTier(5), "recent");
+  assert.equal(ageTier(12), "aging");
+  assert.equal(ageTier(24), "stale");
+  assert.equal(ageTier(null), "");
+});
+
+test("buildRow: stores cutoff from --cutoff or auto-parses model name", () => {
+  const explicit = buildRow(
+    { model: "opus", tier: "t", delta: "0", cutoff: "2026-03" },
+    DEFAULT_CONFIG, new Date("2026-09-18T00:00:00Z"),
+  );
+  assert.equal(explicit.cutoff, "2026-03");
+  const parsed = buildRow(
+    { model: "gpt-5.6-2026-01", tier: "t", delta: "0" },
+    DEFAULT_CONFIG, new Date("2026-09-18T00:00:00Z"),
+  );
+  assert.equal(parsed.cutoff, "2026-01"); // auto-detected
+  assert.throws(
+    () => buildRow({ model: "m", tier: "t", delta: "0", cutoff: "nope" }, DEFAULT_CONFIG),
+    /YYYY-MM/,
+  ); // malformed cutoff blocks the write
+});
+
+test("aggregate: keeps the latest cutoff in a bucket; scorecardRows derives age", () => {
+  const now = new Date("2026-09-18T00:00:00Z");
+  const rows = [
+    { model: "m", effort: "", tier: "t", delta: 1, cutoff: "2026-01" },
+    { model: "m", effort: "", tier: "t", delta: 1, cutoff: "2026-06" },
+  ];
+  const b = aggregate(rows).get("m · t");
+  assert.equal(b.cutoff, "2026-06"); // latest kept
+  const scored = scorecardRows(aggregate(rows), 3, now);
+  assert.equal(scored[0].cutoff, "2026-06");
+  assert.equal(scored[0].ageMonths, 3);
+  assert.equal(scored[0].ageTier, "recent");
+});
+
+test("compareData: --by-age groups by age tier", () => {
+  const now = new Date("2026-09-18T00:00:00Z");
+  const rows = [
+    { model: "opus", effort: "", tier: "t", delta: 2, cutoff: "2026-08" }, // fresh
+    { model: "opus", effort: "", tier: "t", delta: 0, cutoff: "2024-01" }, // stale
+    { model: "terra", effort: "", tier: "t", delta: 1, cutoff: "2026-08" }, // fresh
+  ];
+  const data = compareData(rows, ["opus", "terra"], { groupBy: "age", now });
+  assert.equal(data.opus.groups.fresh.sum, 2);
+  assert.equal(data.opus.groups.stale.sum, 0);
+  assert.deepEqual(groupsOf(data, ["opus", "terra"]), ["fresh", "stale"]);
 });
 
 // --- malformed / missing tolerance -----------------------------------------
@@ -263,6 +351,17 @@ test("scorecardCsv: header + escaped rows", () => {
   );
   const csv = scorecardCsv(scored);
   const [header, row] = csv.split("\n");
-  assert.equal(header, "bucket,avg_delta,n,low_confidence,complexity");
-  assert.match(row, /^"a,b · t",1\.0000,1,true,S:1$/); // comma-containing bucket quoted
+  assert.equal(header, "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier");
+  // comma-containing bucket quoted; no cutoff -> empty cutoff/age/tier columns
+  assert.match(row, /^"a,b · t",1\.0000,1,true,S:1,,,$/);
+});
+
+test("scorecardCsv: cutoff and derived age columns populated", () => {
+  const scored = scorecardRows(
+    aggregate([{ model: "m", tier: "t", delta: 1, cutoff: "2026-06" }]),
+    3,
+    new Date("2026-09-18T00:00:00Z"),
+  );
+  const row = scorecardCsv(scored).split("\n")[1];
+  assert.match(row, /,2026-06,3,recent$/); // 3 months old -> recent
 });

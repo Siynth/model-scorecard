@@ -2,6 +2,29 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.4.0] — 2026-09-18
+
+### Added
+- **Model age from knowledge cutoffs.** Ratings can carry a cutoff date, stored
+  as `YYYY-MM` or `YYYY-MM-DD`:
+  - `log --cutoff YYYY-MM` records it explicitly (malformed values are rejected
+    with no write, like `--delta` / `--effort`).
+  - Otherwise a date-shaped part of the model name is auto-detected
+    (`gpt-5.6-2026-01` → `2026-01`, `claude-sonnet-20241022` → `2024-10-22`);
+    explicit `--cutoff` wins over the parsed one.
+  - `show` gains an **age** column — months since the cutoff, tiered
+    fresh (<3) / recent (<9) / aging (<18) / stale, `-` when unknown.
+  - `compare --by-age` groups the matrix rows by age tier (symmetric with
+    `--by-complexity`).
+  - All age math is **local**, computed at report time against today. There is
+    deliberately no provider API call: knowledge cutoffs are published as prose,
+    not data, and wiring per-provider auth/network would break the zero-dep,
+    offline design (and still only yield mint dates, not cutoffs).
+
+### Notes
+- Ranking stays per-(model × tier); `--global` remains a caveated coarse extra.
+- 51 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.3.0] — 2026-09-18
 
 ### Added

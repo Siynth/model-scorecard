@@ -125,6 +125,90 @@ export function modelAtDepth(model, depth = 0) {
   return kept.map((p, i) => p.seg + (i < kept.length - 1 ? p.sep : "")).join("");
 }
 
+// --- model age / knowledge cutoff -------------------------------------------
+// A model's "age" is derived from a knowledge-cutoff/date, stored per rating as
+// YYYY-MM (month precision) or YYYY-MM-DD. It can be given explicitly with
+// --cutoff, or auto-detected from a date-shaped part of the model name (e.g.
+// "gpt-5.6-2026-01" -> "2026-01", "claude-sonnet-20241022" -> "2024-10-22").
+// Explicit --cutoff wins over the name-parsed one. There is NO provider API for
+// knowledge cutoffs (they are published as prose, not data), so age math is
+// entirely local and computed at report time against the current date.
+const CUTOFF_RE = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/;
+
+// Validate/normalize an explicit --cutoff. Accepts YYYY-MM or YYYY-MM-DD and
+// throws on anything malformed so NO row is written — consistent with the strict
+// --delta / --effort validation (never silently coerce).
+export function normalizeCutoff(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  const m = CUTOFF_RE.exec(s);
+  if (!m) throw new Error(`--cutoff "${s}" must be YYYY-MM or YYYY-MM-DD`);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) throw new Error(`--cutoff "${s}" has an invalid month`);
+  if (m[3]) {
+    const day = Number(m[3]);
+    if (day < 1 || day > 31) throw new Error(`--cutoff "${s}" has an invalid day`);
+    return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return `${m[1]}-${m[2]}`;
+}
+
+// Best-effort date detection inside a free-form model name. Lenient: returns ""
+// (not a throw) when nothing date-shaped is present. Recognizes a hyphenated
+// YYYY-MM(-DD) or a compact 8-digit YYYYMMDD (20xx years only, to avoid matching
+// version numbers). Validates month/day ranges so "1234-56" or "v99" don't match.
+export function parseNameDate(model) {
+  const s = String(model == null ? "" : model);
+  let m = /(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(s);
+  if (m) {
+    const mo = Number(m[2]);
+    if (mo >= 1 && mo <= 12) {
+      if (m[3]) {
+        const d = Number(m[3]);
+        if (d >= 1 && d <= 31) return `${m[1]}-${m[2]}-${m[3]}`;
+      } else {
+        return `${m[1]}-${m[2]}`;
+      }
+    }
+  }
+  m = /(?:^|[^\d])(20\d{2})(\d{2})(\d{2})(?:[^\d]|$)/.exec(s);
+  if (m) {
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return "";
+}
+
+// Resolve the cutoff to store for one rating: a validated explicit --cutoff wins,
+// otherwise fall back to whatever the model name reveals (or "").
+export function resolveCutoff(explicit, model) {
+  const e = normalizeCutoff(explicit); // throws on a malformed explicit value
+  return e || parseNameDate(model);
+}
+
+// Whole months between a cutoff and `now` (month precision; the day component is
+// ignored for the difference). Returns null when there is no cutoff, and clamps
+// a future cutoff to 0.
+export function ageMonths(cutoff, now = new Date()) {
+  if (!cutoff) return null;
+  const m = CUTOFF_RE.exec(cutoff);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const months = (now.getUTCFullYear() - y) * 12 + (now.getUTCMonth() + 1 - mo);
+  return months < 0 ? 0 : months;
+}
+
+// Coarse age tier from a month count. "" when age is unknown.
+export function ageTier(months) {
+  if (months == null) return "";
+  if (months < 3) return "fresh";
+  if (months < 9) return "recent";
+  if (months < 18) return "aging";
+  return "stale";
+}
+
 // --- argument parsing -------------------------------------------------------
 // Parses `--key value` pairs and bare positionals. Flags named in booleanFlags
 // consume no value (e.g. --global, --csv, --by-complexity).
@@ -172,6 +256,7 @@ export function buildRow(o, config = DEFAULT_CONFIG, now = new Date()) {
     task: o.task || "",
     complexity: o.complexity || "",
     delta: validateDelta(o.delta),
+    cutoff: resolveCutoff(o.cutoff, o.model),
     note: o.note || "",
   };
 }
@@ -225,40 +310,55 @@ export function aggregate(rows, depth = 0) {
   const buckets = new Map();
   for (const r of rows) {
     const key = bucketKey(r, depth);
-    const b = buckets.get(key) || { sum: 0, n: 0, comp: {} };
+    const b = buckets.get(key) || { sum: 0, n: 0, comp: {}, cutoff: "" };
     b.sum += r.delta;
     b.n += 1;
     if (r.complexity) b.comp[r.complexity] = (b.comp[r.complexity] || 0) + 1;
+    // Keep the latest cutoff seen in the bucket (lexical compare works for the
+    // YYYY-MM / YYYY-MM-DD forms), so age reflects the freshest rating logged.
+    if (r.cutoff && r.cutoff > b.cutoff) b.cutoff = r.cutoff;
     buckets.set(key, b);
   }
   return buckets;
 }
 
-// Sorted rows for rendering, highest avg first. minN flags thin buckets.
-export function scorecardRows(buckets, minN = MIN_N) {
+// Sorted rows for rendering, highest avg first. minN flags thin buckets. Age is
+// derived from each bucket's cutoff against `now` at report time.
+export function scorecardRows(buckets, minN = MIN_N, now = new Date()) {
   return [...buckets.entries()]
-    .map(([k, b]) => ({
-      key: k,
-      avg: b.sum / b.n,
-      n: b.n,
-      comp: b.comp,
-      lowConfidence: b.n < minN,
-    }))
+    .map(([k, b]) => {
+      const age = ageMonths(b.cutoff, now);
+      return {
+        key: k,
+        avg: b.sum / b.n,
+        n: b.n,
+        comp: b.comp,
+        lowConfidence: b.n < minN,
+        cutoff: b.cutoff || "",
+        ageMonths: age,
+        ageTier: ageTier(age),
+      };
+    })
     .sort((a, b) => b.avg - a.avg);
 }
 
 // --- compare ----------------------------------------------------------------
 // model -> { groups: {label:{sum,n}}, all:{sum,n} }. Group axis is tier by
-// default or complexity when groupBy="complexity". Models are matched at `depth`
-// so you can compare general families (e.g. "5.6") or specific variants.
-export function compareData(rows, models, { depth = 0, groupBy = "tier" } = {}) {
+// default, or complexity when groupBy="complexity", or age tier when
+// groupBy="age". Models are matched at `depth` so you can compare general
+// families (e.g. "5.6") or specific variants.
+export function compareData(rows, models, { depth = 0, groupBy = "tier", now = new Date() } = {}) {
   const data = {};
   for (const r of rows) {
     const md = modelAtDepth(r.model, depth);
     const m = models.find((x) => x === md || `${md}@${r.effort}` === x);
     if (!m) continue;
     data[m] = data[m] || { groups: {}, all: { sum: 0, n: 0 } };
-    const label = (groupBy === "complexity" ? r.complexity : r.tier) || "?";
+    let label;
+    if (groupBy === "complexity") label = r.complexity;
+    else if (groupBy === "age") label = ageTier(ageMonths(r.cutoff, now));
+    else label = r.tier;
+    label = label || "?";
     data[m].groups[label] = data[m].groups[label] || { sum: 0, n: 0 };
     data[m].groups[label].sum += r.delta;
     data[m].groups[label].n++;
@@ -291,10 +391,12 @@ export function csvEscape(v) {
 
 // CSV of the per-bucket scorecard.
 export function scorecardCsv(rows) {
-  const header = "bucket,avg_delta,n,low_confidence,complexity";
+  const header = "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier";
   const body = rows.map((r) => {
     const comp = Object.entries(r.comp).map(([c, n]) => `${c}:${n}`).join(" ");
-    return [r.key, r.avg.toFixed(4), r.n, r.lowConfidence, comp].map(csvEscape).join(",");
+    return [r.key, r.avg.toFixed(4), r.n, r.lowConfidence, comp,
+      r.cutoff || "", r.ageMonths == null ? "" : r.ageMonths, r.ageTier || ""]
+      .map(csvEscape).join(",");
   });
   return [header, ...body].join("\n");
 }

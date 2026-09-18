@@ -14,9 +14,9 @@ Pure Node, zero dependencies. The core is a single portable CLI, so the same too
 This ships the scripts with the plugin; commands resolve via `${CLAUDE_PLUGIN_ROOT}`.
 
 ## Slash commands (Claude Code)
-- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-2..2> --note "<expected vs got>"` — append one rating.
-- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv]` — per (model × tier) average Δ, n, complexity mix.
-- `/score-compare <A> <B> [C ...] [--global] [--by-complexity] [--depth <N>] [--since <date>] [--until <date>]` — models side by side per tier (or per complexity); `--global` adds a coarse overall (mixes task types, use with care).
+- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-2..2> [--cutoff <YYYY-MM>] --note "<expected vs got>"` — append one rating.
+- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv]` — per (model × tier) average Δ, n, model age, complexity mix.
+- `/score-compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since <date>] [--until <date>]` — models side by side per tier (or per complexity / per age); `--global` adds a coarse overall (mixes task types, use with care).
 - `/score-config [--effort-scale a,b,c] [--effort-floor <e>] [--effort-max <e>] [--effort-default <e>] [--default-depth <N>] [--min-n <k>] [--reset]` — view/change plugin config.
 
 ## Portable CLI (any platform)
@@ -24,7 +24,7 @@ This ships the scripts with the plugin; commands resolve via `${CLAUDE_PLUGIN_RO
 The slash commands are thin adapters over one entrypoint. On any platform with Node, call it directly:
 
 ```
-node scripts/scorecard.mjs log     --model "5.6 sol" --effort high --tier orchestration --complexity L --delta 0 --note "met expectations"
+node scripts/scorecard.mjs log     --model "5.6 sol" --effort high --tier orchestration --complexity L --delta 0 --cutoff 2026-01 --note "met expectations"
 node scripts/scorecard.mjs show     --since 2026-09-01 --depth 1 --min-n 3
 node scripts/scorecard.mjs compare  opus4.8 terra --global --by-complexity
 node scripts/scorecard.mjs config   --effort-default high --effort-floor low --default-depth 1
@@ -54,6 +54,24 @@ Names are also **hierarchical**: they split into ordered segments on space / `-`
 
 So depth 0 rates each variant on its own; depth 1 rolls the whole `5.6` family into one bucket. Truncated names keep their original punctuation (`gpt-5.6-sol` → `gpt-5.6`). The default depth is configurable (`config --default-depth`).
 
+## Model age (knowledge cutoff)
+Each rating can carry a **cutoff date** so `show`/`compare` can report how *old* a model is — all computed locally at report time against today. There is deliberately **no provider API call**: knowledge cutoffs are published as prose (model cards / overview pages), not as a queryable field — the provider APIs only expose a model *mint* timestamp, not the cutoff — so wiring per-provider auth + network would break the zero-dep, offline design and still not yield cutoffs.
+
+Two ways the date is supplied (explicit wins):
+- **`--cutoff YYYY-MM`** (or `YYYY-MM-DD`) on `log`. Malformed values are rejected with no write, like `--delta`/`--effort`.
+- **Auto-detected from the model name** — a date-shaped part is parsed automatically: `gpt-5.6-2026-01` → `2026-01`, `claude-sonnet-20241022` → `2024-10-22`. Zero extra typing when the date already lives in the name.
+
+`show` then adds an **age** column (months since the cutoff), tiered:
+
+| tier | age |
+|---|---|
+| `fresh` | < 3 months |
+| `recent` | < 9 months |
+| `aging` | < 18 months |
+| `stale` | ≥ 18 months |
+
+`-` means no cutoff is known for that bucket. `compare --by-age` groups the matrix rows by these tiers (symmetric with `--by-complexity`).
+
 ## Config
 Global config at `~/.claude/scorecard/config.json` (same directory as the data — persists across projects/platforms). `config` with no args prints it. Keys:
 
@@ -73,7 +91,7 @@ Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — per
 ```
 npm test        # or: node --test
 ```
-Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 39 tests cover delta validation, effort/config resolution, model hierarchy/depth, aggregation, compare (per-tier + per-complexity + `--global`), CSV, and malformed/missing-file tolerance.
+Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 51 tests cover delta validation, effort/config resolution, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, age tiers), aggregation, compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
 
 ## Status
-v0.3.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.4.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, model age from knowledge cutoffs, customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.

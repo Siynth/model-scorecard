@@ -168,3 +168,43 @@ test("compare --by-complexity: rows are complexities", () => {
     assert.match(r.stdout, /^L /m);
   });
 });
+
+test("log --cutoff then show: age column reflects the cutoff", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "1", "--cutoff", "2026-06"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /"cutoff":"2026-06"/);
+    const show = run(["show"], env);
+    assert.equal(show.code, 0);
+    assert.match(show.stdout, /\d+mo (fresh|recent|aging|stale)/); // an age like "3mo recent" is rendered
+  });
+});
+
+test("log: auto-detects a date in the model name as the cutoff", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "gpt-5.6-2026-01", "--tier", "t", "--delta", "0"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /"cutoff":"2026-01"/);
+  });
+});
+
+test("log: rejects malformed --cutoff, writes nothing", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "0", "--cutoff", "2026"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /YYYY-MM/);
+    const dataFile = join(home, ".claude", "scorecard", "model_scorecard.jsonl");
+    assert.equal(existsSync(dataFile), false);
+  });
+});
+
+test("compare --by-age: rows are age tiers", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "opus", "--tier", "t", "--delta", "2", "--cutoff", "2020-01"], env);
+    run(["log", "--model", "terra", "--tier", "t", "--delta", "1", "--cutoff", "2020-01"], env);
+    const r = run(["compare", "opus", "terra", "--by-age"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^age/m);
+    assert.match(r.stdout, /^stale /m);
+  });
+});
