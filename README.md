@@ -14,10 +14,10 @@ Pure Node, zero dependencies. The core is a single portable CLI, so the same too
 This ships the scripts with the plugin; commands resolve via `${CLAUDE_PLUGIN_ROOT}`.
 
 ## Slash commands (Claude Code)
-- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-3..3> [--cutoff <YYYY-MM>] --note "<expected vs got>"` — append one rating.
-- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked]` — per (model × tier) average Δ, n, model age, complexity mix. `--weighted` = effort-weighted rollup; `--stacked` = model × complexity grid.
+- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-3..3> [--cutoff <YYYY-MM>] [--dims "correctness:2,efficiency:-1"] [--tokens-in <N> --tokens-out <N>] [--cache-hits <N>] --note "<expected vs got>"` — append one rating.
+- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked] [--decayed] [--dim <name>] [--efficiency]` — per (model × tier) average Δ, n, model age, complexity mix. `--weighted` effort-weighted rollup; `--stacked` model × complexity grid; `--decayed` age-regressed; `--dim <name>` ranks by one facet; `--efficiency` ranks by token usage.
 - `/score-compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since <date>] [--until <date>]` — models side by side per tier (or per complexity / per age); `--global` adds a coarse overall (mixes task types, use with care).
-- `/score-config [--effort-scale a,b,c] [--effort-floor <e>] [--effort-max <e>] [--effort-default <e>] [--default-depth <N>] [--min-n <k>] [--reset]` — view/change plugin config.
+- `/score-config [--effort-scale a,b,c] [--effort-floor <e>] [--effort-max <e>] [--effort-default <e>] [--default-depth <N>] [--min-n <k>] [--age-decay <f>] [--reset]` — view/change plugin config.
 
 ## Portable CLI (any platform)
 
@@ -95,6 +95,12 @@ Beyond the default per-(model × tier) table, `show` offers two rollups (mutuall
 - **`--stacked`** — a grid crossing each bucket (row) with complexity S/M/L (columns) plus an `all` total, so you can read a family's standing across task sizes at a glance. Combine with `--depth` to stack whole families.
 - **`--decayed`** — the same per-bucket table, but each rating's Δ is regressed *toward the neutral 0* by an age-decay factor (`age-decay`^age_years). The semantic is **staleness = less trust in the rating**, not a penalty: a `+2` and a `−2` both shrink toward 0 as they age, and unknown-age ratings are left untouched. Shows the decayed `dΔ` next to the raw avg so the discount is visible.
 
+## Dimensions & tokens
+The headline Δ stays one honest number vs expectation, but a rating can also carry **optional facets and token counts** — orthogonal axes that never touch Δ:
+- **`log --dims "correctness:2,completeness:3,efficiency:-1,format:0"`** — per-facet sub-scores on the same −3..+3 vs-expectation scale. Names are **free-form** (correctness / completeness / efficiency / format-adherence are conventions, not an enum). Bad scores are rejected with no write, like `--delta`.
+- **`show --dim <name>`** — ranks buckets by one facet's average instead of the overall Δ (buckets that never logged it are omitted), so you can read the field along whichever axis matters. Still per-(model × tier), still read-within-a-bucket.
+- **`log --tokens-in <N> --tokens-out <N> --cache-hits <N>`** (or a plain `--tokens <N>` total) — token counts *you supply* (nothing is observed). **`show --efficiency`** reports avg in/out/cache/total per bucket, ranked by total ascending (fewer = more efficient) — a separate efficiency axis, never folded into Δ.
+
 ## Data
 Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — persists across every project and platform). Malformed lines are skipped, not fatal; a missing file is reported gracefully.
 
@@ -102,10 +108,10 @@ Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — per
 ```
 npm test        # or: node --test
 ```
-Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 64 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup, stacked grid, and age-decay), compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
+Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 74 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup, stacked grid, and age-decay), dimension tags + token efficiency, compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
 
 ## Status
-v0.6.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical family-first model names with `--depth`, effort-weighted + stacked-complexity + age-decayed views, a −3..+3 rating scale, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.7.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical family-first model names with `--depth`, effort-weighted + stacked-complexity + age-decayed views, optional dimension tags + token-efficiency ranking, a −3..+3 rating scale, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
 
 ## License
 MIT — see [`LICENSE`](LICENSE).

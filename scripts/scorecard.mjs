@@ -13,6 +13,7 @@ import {
   parseArgs, buildRow, parseLines, filterByDate,
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
   aggregateWeighted, weightedRows, stackedData, aggregateDecayed, decayedRows,
+  aggregateDimension, dimensionRows, dimensionsPresent, aggregateTokens, tokenRows,
 } from "./lib.mjs";
 
 const [sub, ...rest] = process.argv.slice(2);
@@ -67,7 +68,7 @@ function cmdLog(argv) {
 
 // --- show -------------------------------------------------------------------
 function cmdShow(argv) {
-  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed"]);
+  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed", "efficiency"]);
   const config = readConfig();
   const minN = opts["min-n"] != null ? Number(opts["min-n"]) : config.minN;
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
@@ -78,6 +79,45 @@ function cmdShow(argv) {
   }
   const rows = filterByDate(parsed, { since: opts.since, until: opts.until });
   const pad = (s, n) => String(s).padEnd(n);
+
+  if (opts.dim) {
+    const dim = opts.dim;
+    const scored = dimensionRows(aggregateDimension(rows, dim, depth), minN);
+    if (!scored.length) {
+      const present = dimensionsPresent(rows);
+      console.log(`no ratings carry dimension "${dim}".`);
+      console.log(`known dimensions: ${present.length ? present.join(", ") : "(none logged yet)"}`);
+      return;
+    }
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    const w = Math.max(12, `avg ${dim}`.length + 2);
+    console.log(pad("model@effort · tier", 40) + pad(`avg ${dim}`, w) + "n" + depthNote);
+    console.log("-".repeat(41 + w));
+    for (const r of scored) {
+      console.log(pad(r.key, 40) + pad(signed(r.avg), w) + r.n + (r.lowConfidence ? "  ⚠ low-n" : ""));
+    }
+    console.log(`\nRanked by the "${dim}" dimension (−3..+3 vs expectation), per bucket. ⚠ low-n < ${minN}.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
+
+  if (opts.efficiency) {
+    const scored = tokenRows(aggregateTokens(rows, depth));
+    if (!scored.length) {
+      console.log("no ratings carry token counts yet (log with --tokens / --tokens-in / --tokens-out / --cache-hits).");
+      return;
+    }
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    const num = (v) => (v == null ? "-" : Math.round(v).toLocaleString());
+    console.log(pad("model@effort · tier", 40) + pad("in", 10) + pad("out", 10) + pad("cache", 10) + pad("total", 10) + "n" + depthNote);
+    console.log("-".repeat(84));
+    for (const r of scored) {
+      console.log(pad(r.key, 40) + pad(num(r.avgIn), 10) + pad(num(r.avgOut), 10) + pad(num(r.avgCache), 10) + pad(num(r.avgTotal), 10) + r.n);
+    }
+    console.log(`\nAvg tokens per rating, ranked by total ASCENDING (fewer = more efficient). All local, from logged counts.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
 
   if (opts.decayed) {
     const base = config.ageDecayPerYear;
@@ -238,8 +278,11 @@ function cmdConfig(argv) {
 const HELP = `model-scorecard — rate subagent models vs. expectation, per (model x tier).
 
   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \\
-                        [--complexity <S|M|L>] --delta <-3..3> [--cutoff <YYYY-MM>] [--note "..."]
-  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked] [--decayed]
+                        [--complexity <S|M|L>] --delta <-3..3> [--cutoff <YYYY-MM>] \\
+                        [--dims "correctness:2,efficiency:-1,..."] \\
+                        [--tokens N | --tokens-in N --tokens-out N] [--cache-hits N] [--note "..."]
+  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] \\
+                        [--csv] [--weighted] [--stacked] [--decayed] [--dim <name>] [--efficiency]
   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since D] [--until D]
   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \\
                         [--effort-default e] [--default-depth N] [--min-n k] [--age-decay f] [--reset]
@@ -248,10 +291,11 @@ const HELP = `model-scorecard — rate subagent models vs. expectation, per (mod
 Model names are free-form AND hierarchical — log family-first ("opus 5", "sonnet
 5.1") so --depth 1 rolls a family's versions under "opus"/"sonnet". --depth 0
 (default) = full name (most specific).
-show --weighted folds effort variants into one model·tier bucket, weighting Δ by
-effort rank; show --stacked is a model × complexity (S/M/L) grid; show --decayed
-regresses each Δ toward 0 by age (staleness = less trust, set rate with
-config --age-decay).
+--dims adds optional per-facet sub-scores (same -3..3 scale, free-form names);
+show --dim <name> ranks by one facet. --tokens/-in/-out + --cache-hits record
+counts you were given; show --efficiency ranks buckets by avg tokens (fewer =
+better). show --weighted (effort-weighted), --stacked (× complexity), --decayed
+(age toward 0) are the other lenses.
 --cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01, or the
 bundled scripts/cutoffs.json seed) gives the model a knowledge-cutoff date;
 show/compare derive age (fresh/recent/aging/stale) from it against today — all

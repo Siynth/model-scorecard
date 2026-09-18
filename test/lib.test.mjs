@@ -9,6 +9,8 @@ import {
   normalizeCutoff, parseNameDate, resolveCutoff, ageMonths, ageTier,
   effortWeight, lookupSeedCutoff, aggregateWeighted, weightedRows, stackedData,
   ageDecayFactor, aggregateDecayed, decayedRows,
+  parseDims, buildTokens, aggregateDimension, dimensionRows, dimensionsPresent,
+  aggregateTokens, tokenRows,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -297,6 +299,77 @@ test("aggregateDecayed/decayedRows: regress Δ toward 0 by age, raw kept", () =>
   assert.ok(Math.abs(fresh.decayedAvg - 2) < 1e-9);   // fresh unchanged
   assert.ok(old.decayedAvg < 2 && old.decayedAvg > 1.6); // +2 shrunk toward 0
   assert.ok(neg.decayedAvg > -2 && neg.decayedAvg < -1.6); // -2 also shrunk toward 0 (less negative)
+});
+
+// --- dimension tags & tokens ------------------------------------------------
+test("parseDims: name:score pairs on the -3..3 scale, rejects bad", () => {
+  assert.deepEqual(parseDims("correctness:3,efficiency:-1,format:0"),
+    { correctness: 3, efficiency: -1, format: 0 });
+  assert.deepEqual(parseDims(""), {});
+  assert.deepEqual(parseDims(null), {});
+  assert.throws(() => parseDims("correctness:4"), /-3\.\.3/);   // out of range
+  assert.throws(() => parseDims("correctness:1.5"), /-3\.\.3/); // non-integer
+  assert.throws(() => parseDims("noscore"), /name:score/);      // missing score
+  assert.throws(() => parseDims(":2"), /name:score|empty name/); // empty name
+});
+
+test("buildTokens: reads in/out/cache/total; derives total; rejects negatives", () => {
+  assert.deepEqual(buildTokens({ "tokens-in": "1000", "tokens-out": "250", "cache-hits": "40" }),
+    { in: 1000, out: 250, cache: 40, total: 1250 }); // total derived from in+out
+  assert.deepEqual(buildTokens({ tokens: "5000" }), { total: 5000 });
+  assert.equal(buildTokens({}), null); // nothing given
+  assert.throws(() => buildTokens({ tokens: "-5" }), /non-negative/);
+  assert.throws(() => buildTokens({ "tokens-in": "1.5" }), /non-negative/);
+});
+
+test("buildRow: attaches dims and tokens only when present", () => {
+  const bare = buildRow({ model: "m", tier: "t", delta: "1" }, DEFAULT_CONFIG, new Date("2026-09-18T00:00:00Z"));
+  assert.equal(bare.dims, undefined);
+  assert.equal(bare.tokens, undefined);
+  const rich = buildRow(
+    { model: "m", tier: "t", delta: "1", dims: "correctness:3,efficiency:-1", "tokens-out": "200" },
+    DEFAULT_CONFIG, new Date("2026-09-18T00:00:00Z"),
+  );
+  assert.deepEqual(rich.dims, { correctness: 3, efficiency: -1 });
+  assert.deepEqual(rich.tokens, { out: 200, total: 200 });
+});
+
+test("aggregateDimension/dimensionRows: per-bucket avg of one facet, skips rows without it", () => {
+  const rows = [
+    { model: "a", effort: "", tier: "t", delta: 0, dims: { correctness: 3 } },
+    { model: "a", effort: "", tier: "t", delta: 0, dims: { correctness: 1 } },
+    { model: "a", effort: "", tier: "t", delta: 0 }, // no dims → skipped
+    { model: "b", effort: "", tier: "t", delta: 0, dims: { completeness: 2 } }, // different dim
+  ];
+  const scored = dimensionRows(aggregateDimension(rows, "correctness"), 3);
+  assert.equal(scored.length, 1);
+  assert.equal(scored[0].key, "a · t");
+  assert.equal(scored[0].avg, 2); // (3+1)/2
+  assert.equal(scored[0].n, 2);   // the dim-less row excluded
+});
+
+test("dimensionsPresent: sorted union of dim names", () => {
+  const rows = [
+    { dims: { correctness: 1, format: 0 } },
+    { dims: { efficiency: 2 } },
+    {},
+  ];
+  assert.deepEqual(dimensionsPresent(rows), ["correctness", "efficiency", "format"]);
+});
+
+test("aggregateTokens/tokenRows: per-bucket avgs, ranked by total ascending", () => {
+  const rows = [
+    { model: "lean", effort: "", tier: "t", delta: 0, tokens: { in: 1000, out: 100, total: 1100 } },
+    { model: "lean", effort: "", tier: "t", delta: 0, tokens: { in: 2000, out: 200, total: 2200 } },
+    { model: "heavy", effort: "", tier: "t", delta: 0, tokens: { in: 9000, out: 900, total: 9900 } },
+    { model: "notok", effort: "", tier: "t", delta: 0 }, // no tokens → excluded
+  ];
+  const scored = tokenRows(aggregateTokens(rows));
+  assert.equal(scored.length, 2);
+  assert.equal(scored[0].key, "lean · t"); // fewer tokens ranks first
+  assert.equal(scored[0].avgTotal, 1650);  // (1100+2200)/2
+  assert.equal(scored[0].avgOut, 150);
+  assert.equal(scored[1].key, "heavy · t");
 });
 
 // --- malformed / missing tolerance -----------------------------------------

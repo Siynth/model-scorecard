@@ -260,3 +260,50 @@ test("show --decayed: shows decayed + raw columns, regresses old ratings", () =>
     assert.match(r.stdout, /dΔ.*raw/); // both columns in header
   });
 });
+
+test("log --dims + show --dim: rank by a facet", () => {
+  withTempHome((home, env) => {
+    const l = run(["log", "--model", "opus", "--tier", "t", "--delta", "1", "--dims", "correctness:3,format:-1"], env);
+    assert.equal(l.code, 0);
+    assert.match(l.stdout, /"dims":\{"correctness":3,"format":-1\}/);
+    const r = run(["show", "--dim", "correctness"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /avg correctness/);
+    assert.match(r.stdout, /opus@medium · t/); // default effort applied to the bucket key
+    const miss = run(["show", "--dim", "nope"], env);
+    assert.match(miss.stdout, /no ratings carry dimension "nope"/);
+    assert.match(miss.stdout, /known dimensions: correctness, format/);
+  });
+});
+
+test("log --dims: rejects out-of-range facet score, writes nothing", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "1", "--dims", "correctness:5"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /-3\.\.3/);
+    const dataFile = join(home, ".claude", "scorecard", "model_scorecard.jsonl");
+    assert.equal(existsSync(dataFile), false);
+  });
+});
+
+test("log --tokens + show --efficiency: per-bucket token averages ranked ascending", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "lean", "--tier", "t", "--delta", "0", "--tokens-in", "1000", "--tokens-out", "100", "--cache-hits", "50"], env);
+    run(["log", "--model", "heavy", "--tier", "t", "--delta", "0", "--tokens", "9000"], env);
+    const r = run(["show", "--efficiency"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /in\s+out\s+cache\s+total/);
+    // lean (1,100 total) should rank above heavy (9,000)
+    const leanIdx = r.stdout.indexOf("lean@medium · t");
+    const heavyIdx = r.stdout.indexOf("heavy@medium · t");
+    assert.ok(leanIdx > -1 && heavyIdx > -1 && leanIdx < heavyIdx);
+  });
+});
+
+test("log: rejects negative token count, writes nothing", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "m", "--tier", "t", "--delta", "0", "--tokens", "-5"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /non-negative/);
+  });
+});

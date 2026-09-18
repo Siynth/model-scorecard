@@ -2,6 +2,23 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.7.0] — 2026-09-18
+
+### Added
+- **Dimension tags.** `log --dims "correctness:2,completeness:3,efficiency:-1,format:0"`
+  attaches optional per-facet sub-scores on the same -3..+3 vs-expectation scale
+  (free-form names; bad scores rejected with no write). **`show --dim <name>`**
+  ranks buckets by one facet instead of the overall Δ.
+- **Token counts + efficiency ranking.** `log --tokens N` (or
+  `--tokens-in`/`--tokens-out`/`--cache-hits`) records counts you supply — nothing
+  is observed. **`show --efficiency`** reports avg in/out/cache/total per bucket,
+  ranked by total ascending (fewer = more efficient).
+
+### Notes
+- Both are orthogonal axes: they never touch the headline Δ (kept as one honest
+  number vs expectation). Ranking stays per-(model × tier).
+- 74 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.6.0] — 2026-09-18
 
 ### Changed

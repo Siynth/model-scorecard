@@ -1,6 +1,6 @@
 {
   "name": "model-scorecard",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores. Zero dependencies, portable pure-Node core.",
   "type": "module",
   "keywords": ["scorecard", "llm", "subagent", "rating", "cli", "claude-code", "plugin"],

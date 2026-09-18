@@ -267,12 +267,13 @@ export function validateDelta(v) {
   return d;
 }
 
-// Validated row from parsed opts; requires model/tier/delta, resolves effort + cutoff.
+// Validated row from parsed opts; requires model/tier/delta, resolves effort +
+// cutoff, and attaches optional dimension tags + token counts when present.
 export function buildRow(o, config = DEFAULT_CONFIG, now = new Date(), seed = {}) {
   for (const k of ["model", "tier", "delta"]) {
     if (o[k] == null) throw new Error(`missing --${k}`);
   }
-  return {
+  const row = {
     date: o.date || now.toISOString().slice(0, 10),
     model: o.model,
     effort: resolveEffort(o.effort, config),
@@ -283,6 +284,124 @@ export function buildRow(o, config = DEFAULT_CONFIG, now = new Date(), seed = {}
     cutoff: resolveCutoff(o.cutoff, o.model, seed),
     note: o.note || "",
   };
+  const dims = parseDims(o.dims);
+  if (Object.keys(dims).length) row.dims = dims;
+  const tokens = buildTokens(o);
+  if (tokens) row.tokens = tokens;
+  return row;
+}
+
+// --- dimension tags & tokens ------------------------------------------------
+// Optional per-facet sub-scores on the same -3..+3 vs-expectation scale
+// (correctness, completeness, efficiency, format-adherence, …). Free-form names,
+// parsed from `--dims "name:score,other:score"`. Throws on a bad score (no write).
+export function parseDims(str) {
+  const s = String(str == null ? "" : str).trim();
+  if (!s) return {};
+  const dims = {};
+  for (const part of s.split(",")) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const i = seg.indexOf(":");
+    if (i < 1) throw new Error(`--dims entry "${seg}" must be name:score`);
+    const name = seg.slice(0, i).trim();
+    const score = seg.slice(i + 1).trim();
+    if (!name) throw new Error(`--dims entry "${seg}" has an empty name`);
+    const d = Number(score);
+    if (score === "" || !Number.isInteger(d) || !DELTAS.has(d)) {
+      throw new Error(`--dims "${name}" score must be an integer in -3..3`);
+    }
+    dims[name] = d;
+  }
+  return dims;
+}
+
+// Non-negative integer or null (blank); throws on anything else.
+function toCount(v, label) {
+  const s = String(v == null ? "" : v).trim();
+  if (s === "") return null;
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${label} must be a non-negative integer`);
+  return n;
+}
+
+// Optional token counts from --tokens / --tokens-in / --tokens-out / --cache-hits.
+// Returns { in?, out?, cache?, total } or null when none given (total derived
+// from in+out when not passed explicitly). All local — the caller supplies the
+// counts; nothing is observed.
+export function buildTokens(o) {
+  const t = {};
+  const tin = toCount(o["tokens-in"], "--tokens-in");
+  const tout = toCount(o["tokens-out"], "--tokens-out");
+  const cache = toCount(o["cache-hits"], "--cache-hits");
+  const total = toCount(o.tokens, "--tokens");
+  if (tin != null) t.in = tin;
+  if (tout != null) t.out = tout;
+  if (cache != null) t.cache = cache;
+  if (total != null) t.total = total;
+  else if (tin != null || tout != null) t.total = (tin || 0) + (tout || 0);
+  return Object.keys(t).length ? t : null;
+}
+
+// Sorted set of dimension names present across rows.
+export function dimensionsPresent(rows) {
+  const names = new Set();
+  for (const r of rows) if (r.dims) for (const k of Object.keys(r.dims)) names.add(k);
+  return [...names].sort();
+}
+
+// Per-bucket average of ONE named dimension (rows lacking it are skipped).
+export function aggregateDimension(rows, dim, depth = 0) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const v = r.dims && Number.isFinite(Number(r.dims[dim])) ? Number(r.dims[dim]) : null;
+    if (v == null) continue;
+    const key = bucketKey(r, depth);
+    const b = buckets.get(key) || { sum: 0, n: 0 };
+    b.sum += v;
+    b.n += 1;
+    buckets.set(key, b);
+  }
+  return buckets;
+}
+
+// Dimension rows sorted by avg desc.
+export function dimensionRows(buckets, minN = MIN_N) {
+  return [...buckets.entries()]
+    .map(([k, b]) => ({ key: k, avg: b.sum / b.n, n: b.n, lowConfidence: b.n < minN }))
+    .sort((a, b) => b.avg - a.avg);
+}
+
+// Per-bucket token averages (in/out/cache/total), only rows carrying tokens.
+export function aggregateTokens(rows, depth = 0) {
+  const buckets = new Map();
+  for (const r of rows) {
+    if (!r.tokens) continue;
+    const t = r.tokens;
+    const key = bucketKey(r, depth);
+    const b = buckets.get(key) || { in: 0, out: 0, cache: 0, total: 0, nIn: 0, nOut: 0, nCache: 0, n: 0 };
+    if (Number.isFinite(t.in)) { b.in += t.in; b.nIn += 1; }
+    if (Number.isFinite(t.out)) { b.out += t.out; b.nOut += 1; }
+    if (Number.isFinite(t.cache)) { b.cache += t.cache; b.nCache += 1; }
+    b.total += Number.isFinite(t.total) ? t.total : (t.in || 0) + (t.out || 0);
+    b.n += 1;
+    buckets.set(key, b);
+  }
+  return buckets;
+}
+
+// Token rows sorted by avg total ASCENDING (fewer tokens = more efficient).
+export function tokenRows(buckets) {
+  return [...buckets.entries()]
+    .map(([k, b]) => ({
+      key: k,
+      n: b.n,
+      avgIn: b.nIn ? b.in / b.nIn : null,
+      avgOut: b.nOut ? b.out / b.nOut : null,
+      avgCache: b.nCache ? b.cache / b.nCache : null,
+      avgTotal: b.total / b.n,
+    }))
+    .sort((a, b) => a.avgTotal - b.avgTotal);
 }
 
 // --- reading ----------------------------------------------------------------
