@@ -7,7 +7,7 @@ Pure Node, zero dependencies. The core is a single portable CLI, so the same too
 ## Install (Claude Code)
 
 ```
-/plugin marketplace add <this-repo-or-path>
+/plugin marketplace add Siynth/model-scorecard
 /plugin install model-scorecard
 ```
 
@@ -25,7 +25,10 @@ The slash commands are thin adapters over one entrypoint. On any platform with N
 
 ```
 node scripts/scorecard.mjs log     --model "5.6 sol" --effort high --tier orchestration --complexity L --delta 0 --cutoff 2026-01 --note "met expectations"
+node scripts/scorecard.mjs log     --model "opus 5" --tier orchestration --delta 2 --dims "correctness:2,efficiency:-1" --tokens-in 12000 --tokens-out 800
 node scripts/scorecard.mjs show     --since 2026-09-01 --depth 1 --min-n 3
+node scripts/scorecard.mjs show     --efficiency          # rank by token usage (Δ/ktok)
+node scripts/scorecard.mjs show     --badges              # derived ranking tags
 node scripts/scorecard.mjs compare  opus4.8 terra --global --by-complexity
 node scripts/scorecard.mjs config   --effort-default high --effort-floor low --default-depth 1
 node scripts/scorecard.mjs help
@@ -90,7 +93,7 @@ Global config at `~/.claude/scorecard/config.json` (same directory as the data �
 -3 far below · -2 well below · -1 below · 0 met · +1 above · +2 well above · +3 far above. `0 = correctly tiered, not mediocre`. Bucket avg ~0 = correctly tiered; + = beats its tier; − = underperforms. Read WITHIN a bucket only. Buckets with fewer than `--min-n` ratings (default 3) are flagged `⚠ low-n` — indicative only.
 
 ## Views
-Beyond the default per-(model × tier) table, `show` offers two rollups (mutually exclusive):
+Beyond the default per-(model × tier) table, `show` offers three rollups (mutually exclusive — the first one given wins):
 - **`--weighted`** — folds the `@effort` variants of a model back into one `model · tier` bucket and reports an **effort-weighted** avg Δ: each rating is weighted by its effort rank (`minimal`=1 … `high`=4 on the default scale; off-scale/empty efforts weigh 1). Use it to ask "which model is best overall, crediting wins earned at higher effort", instead of reading each effort bucket separately.
 - **`--stacked`** — a grid crossing each bucket (row) with complexity S/M/L (columns) plus an `all` total, so you can read a family's standing across task sizes at a glance. Combine with `--depth` to stack whole families.
 - **`--decayed`** — the same per-bucket table, but each rating's Δ is regressed *toward the neutral 0* by an age-decay factor (`age-decay`^age_years). The semantic is **staleness = less trust in the rating**, not a penalty: a `+2` and a `−2` both shrink toward 0 as they age, and unknown-age ratings are left untouched. Shows the decayed `dΔ` next to the raw avg so the discount is visible.
