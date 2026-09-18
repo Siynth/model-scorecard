@@ -1,0 +1,7 @@
+{
+  "name": "model-scorecard",
+  "version": "0.2.0",
+  "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores + comparison. Free-form model names, global append-only data in ~/.claude/scorecard/. Portable pure-Node core usable from any platform.",
+  "author": { "name": "Allen" },
+  "commands": ["./commands/score-log.md", "./commands/score.md", "./commands/score-compare.md"]
+}

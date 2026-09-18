@@ -1,0 +1,13 @@
+{
+  "name": "model-scorecard",
+  "version": "0.2.0",
+  "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores. Zero dependencies, portable pure-Node core.",
+  "type": "module",
+  "bin": { "scorecard": "./scripts/scorecard.mjs" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "files": ["scripts/", "commands/", ".claude-plugin/", "README.md", "CHANGELOG.md"]
+}
