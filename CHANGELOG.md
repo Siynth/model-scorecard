@@ -2,6 +2,37 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.3.0] — 2026-09-18
+
+### Added
+- **Hierarchical model names + `--depth`.** Model names decompose into ordered
+  segments (split on space / `-` / `_` / `/` / `:`; dots kept, so `5.6` stays one
+  segment). `show`/`compare` take `--depth N` to group at N segments: `--depth 1`
+  rolls `5.6 sol`, `5.6 terra`, `5.6 luna` up under `5.6` (general), `--depth 0`
+  (default) keeps every variant distinct (specific). Truncated names keep their
+  original delimiters (`gpt-5.6`).
+- **Customizable plugin config** (`config` subcommand / `/score-config`), stored
+  globally at `~/.claude/scorecard/config.json`:
+  - `--effort-scale a,b,c` — ordered low→high effort vocabulary (clear it for
+    free-form efforts).
+  - `--effort-floor` / `--effort-max` — bound which efforts `log` accepts.
+  - `--effort-default` — effort applied when a rating omits `--effort` (the
+    plugin's default, distinct from any interface default).
+  - `--default-depth` — hierarchy depth `show`/`compare` use when `--depth` is
+    omitted.
+  - `--min-n` — default low-confidence threshold.
+- **`compare --by-complexity`** — the deferred per-complexity comparison matrix:
+  rows become S/M/L instead of tiers.
+
+### Changed
+- `log` now resolves effort through config: applies the default when omitted, and
+  **rejects** (no write) an effort outside the configured scale/floor/max rather
+  than silently coercing — consistent with the strict delta validation.
+
+### Notes
+- Ranking stays per-(model × tier); `--global` remains a caveated coarse extra.
+- 39 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.2.0] — 2026-09-18
 
 ### Changed

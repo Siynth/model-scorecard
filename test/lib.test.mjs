@@ -3,7 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseArgs, validateDelta, buildRow, parseLines, filterByDate,
-  aggregate, scorecardRows, compareData, tiersOf, avgLabel, signed, scorecardCsv,
+  aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
+  DEFAULT_CONFIG, normalizeConfig, resolveEffort,
+  modelParts, modelSegments, modelAtDepth, bucketKey,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -38,12 +40,84 @@ test("buildRow: rejects missing required fields, no row produced", () => {
 test("buildRow: fills defaults and validates delta", () => {
   const row = buildRow(
     { model: "opus", tier: "orchestration", delta: "1" },
+    DEFAULT_CONFIG,
     new Date("2026-09-18T00:00:00Z"),
   );
   assert.equal(row.date, "2026-09-18");
   assert.equal(row.delta, 1);
-  assert.equal(row.effort, "");
+  assert.equal(row.effort, DEFAULT_CONFIG.effortDefault); // default applied
   assert.throws(() => buildRow({ model: "o", tier: "t", delta: "9" }), /-2\.\.2/);
+});
+
+// --- config -----------------------------------------------------------------
+test("normalizeConfig: coerces junk, keeps floor<=max, default in range", () => {
+  const c = normalizeConfig({
+    effortScale: [" low ", "high", ""], effortFloor: "high", effortMax: "low",
+    effortDefault: "bogus", defaultDepth: -3, minN: 0,
+  });
+  assert.deepEqual(c.effortScale, ["low", "high"]);
+  assert.equal(c.effortFloor, "low"); // floor/max swapped back into order
+  assert.equal(c.effortMax, "high");
+  assert.ok(c.effortScale.includes(c.effortDefault)); // bogus default snapped into scale
+  assert.equal(c.defaultDepth, 0);
+  assert.equal(c.minN, 3);
+});
+
+test("normalizeConfig: empty scale means free-form efforts", () => {
+  const c = normalizeConfig({ effortScale: [], effortDefault: "whatever" });
+  assert.deepEqual(c.effortScale, []);
+  assert.equal(c.effortFloor, null);
+  assert.equal(c.effortMax, null);
+  assert.equal(c.effortDefault, "whatever");
+});
+
+test("resolveEffort: applies default when omitted", () => {
+  assert.equal(resolveEffort("", DEFAULT_CONFIG), DEFAULT_CONFIG.effortDefault);
+  assert.equal(resolveEffort(undefined, DEFAULT_CONFIG), DEFAULT_CONFIG.effortDefault);
+});
+
+test("resolveEffort: rejects unknown or out-of-range effort (no coercion)", () => {
+  const cfg = normalizeConfig({
+    effortScale: ["minimal", "low", "medium", "high"],
+    effortFloor: "low", effortMax: "medium", effortDefault: "low",
+  });
+  assert.equal(resolveEffort("medium", cfg), "medium");
+  assert.throws(() => resolveEffort("xhigh", cfg), /not in the effort scale/);
+  assert.throws(() => resolveEffort("minimal", cfg), /below the configured floor/);
+  assert.throws(() => resolveEffort("high", cfg), /above the configured max/);
+});
+
+test("resolveEffort: free-form scale accepts anything", () => {
+  const cfg = normalizeConfig({ effortScale: [] });
+  assert.equal(resolveEffort("thinking-32k", cfg), "thinking-32k");
+});
+
+test("buildRow: rejects out-of-range effort so no row is written", () => {
+  const cfg = normalizeConfig({ effortScale: ["low", "high"], effortFloor: "low", effortMax: "low" });
+  assert.throws(() => buildRow({ model: "m", tier: "t", delta: "0", effort: "high" }, cfg), /above the configured max/);
+});
+
+// --- model hierarchy --------------------------------------------------------
+test("modelSegments/modelParts: split on space/-/_/:// keep dots", () => {
+  assert.deepEqual(modelSegments("5.6 sol"), ["5.6", "sol"]);
+  assert.deepEqual(modelSegments("gpt-5.6-sol"), ["gpt", "5.6", "sol"]);
+  assert.deepEqual(modelSegments("claude/opus-4.8"), ["claude", "opus", "4.8"]);
+  assert.deepEqual(modelSegments("opus4.8"), ["opus4.8"]);
+  assert.deepEqual(modelSegments(""), []);
+});
+
+test("modelAtDepth: truncates preserving original delimiters; 0/over-len = full", () => {
+  assert.equal(modelAtDepth("gpt-5.6-sol", 0), "gpt-5.6-sol"); // full
+  assert.equal(modelAtDepth("gpt-5.6-sol", 2), "gpt-5.6");     // original hyphen kept
+  assert.equal(modelAtDepth("5.6 sol", 1), "5.6");
+  assert.equal(modelAtDepth("5.6 sol", 9), "5.6 sol");         // depth > len -> full
+});
+
+test("bucketKey: groups variants together at a shallow depth", () => {
+  const sol = { model: "5.6 sol", effort: "", tier: "orchestration" };
+  const terra = { model: "5.6 terra", effort: "", tier: "orchestration" };
+  assert.notEqual(bucketKey(sol, 0), bucketKey(terra, 0)); // specific: distinct
+  assert.equal(bucketKey(sol, 1), bucketKey(terra, 1));    // general: same "5.6" bucket
 });
 
 // --- malformed / missing tolerance -----------------------------------------
@@ -99,6 +173,20 @@ test("aggregate: known rows -> known per-bucket averages", () => {
   assert.equal(simple.sum / simple.n, -1);
 });
 
+test("aggregate: shallow depth rolls model variants into one bucket", () => {
+  const rows = [
+    { model: "5.6 sol", effort: "", tier: "orchestration", delta: 2 },
+    { model: "5.6 terra", effort: "", tier: "orchestration", delta: 0 },
+  ];
+  const specific = aggregate(rows, 0);
+  assert.equal(specific.size, 2); // sol and terra distinct
+  const general = aggregate(rows, 1);
+  assert.equal(general.size, 1);
+  const b = general.get("5.6 · orchestration");
+  assert.equal(b.n, 2);
+  assert.equal(b.sum / b.n, 1); // (2+0)/2
+});
+
 test("scorecardRows: sorted desc by avg, low-n flagged below minN", () => {
   const rows = [
     { model: "a", tier: "t", delta: 2 },
@@ -123,11 +211,33 @@ test("compareData: per-tier side-by-side + global totals", () => {
     { model: "terra", effort: "", tier: "simple", delta: 1 },
   ];
   const data = compareData(rows, ["opus@high", "terra"]);
-  assert.equal(data["opus@high"].tiers.orchestration.sum, 2);
+  assert.equal(data["opus@high"].groups.orchestration.sum, 2);
   assert.equal(data["opus@high"].all.sum, 0); // 2 + -2
   assert.equal(data["opus@high"].all.n, 2);
   assert.equal(data.terra.all.sum, 2);
-  assert.deepEqual(tiersOf(data, ["opus@high", "terra"]), ["orchestration", "simple"]);
+  assert.deepEqual(groupsOf(data, ["opus@high", "terra"]), ["orchestration", "simple"]);
+});
+
+test("compareData: --by-complexity groups by complexity instead of tier", () => {
+  const rows = [
+    { model: "opus", effort: "", tier: "t", complexity: "L", delta: 2 },
+    { model: "opus", effort: "", tier: "t", complexity: "S", delta: -1 },
+    { model: "terra", effort: "", tier: "t", complexity: "L", delta: 1 },
+  ];
+  const data = compareData(rows, ["opus", "terra"], { groupBy: "complexity" });
+  assert.equal(data.opus.groups.L.sum, 2);
+  assert.equal(data.opus.groups.S.sum, -1);
+  assert.deepEqual(groupsOf(data, ["opus", "terra"]), ["L", "S"]);
+});
+
+test("compareData: matches at hierarchy depth", () => {
+  const rows = [
+    { model: "5.6 sol", effort: "", tier: "t", delta: 2 },
+    { model: "5.6 terra", effort: "", tier: "t", delta: 0 },
+  ];
+  const data = compareData(rows, ["5.6"], { depth: 1 });
+  assert.equal(data["5.6"].all.n, 2); // both variants matched the general name
+  assert.equal(data["5.6"].all.sum, 2);
 });
 
 test("compareData: matches bare model or model@effort form", () => {

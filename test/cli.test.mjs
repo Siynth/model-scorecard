@@ -104,3 +104,67 @@ test("unknown subcommand: exits non-zero with help", () => {
     assert.match(r.stderr, /unknown command/);
   });
 });
+
+test("config: set roundtrips to disk and back", () => {
+  withTempHome((home, env) => {
+    const set = run(["config", "--effort-default", "high", "--default-depth", "1"], env);
+    assert.equal(set.code, 0);
+    const cfgFile = join(home, ".claude", "scorecard", "config.json");
+    assert.ok(existsSync(cfgFile), "config file should be created");
+    const saved = JSON.parse(readFileSync(cfgFile, "utf8"));
+    assert.equal(saved.effortDefault, "high");
+    assert.equal(saved.defaultDepth, 1);
+    const show = run(["config"], env);
+    assert.match(show.stdout, /"effortDefault": "high"/);
+  });
+});
+
+test("config: unknown key exits non-zero", () => {
+  withTempHome((home, env) => {
+    const r = run(["config", "--bogus", "x"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /unknown config key/);
+  });
+});
+
+test("log: applies configured default effort when --effort omitted", () => {
+  withTempHome((home, env) => {
+    run(["config", "--effort-default", "high"], env);
+    const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "1"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /"effort":"high"/);
+  });
+});
+
+test("log: rejects out-of-range effort, writes nothing", () => {
+  withTempHome((home, env) => {
+    run(["config", "--effort-scale", "low,medium", "--effort-max", "medium"], env);
+    const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "1", "--effort", "high"], env);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /not in the effort scale|above the configured max/);
+  });
+});
+
+test("show --depth: rolls up model variants into one bucket", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "5.6 sol", "--tier", "orchestration", "--delta", "2", "--effort", "high"], env);
+    run(["log", "--model", "5.6 terra", "--tier", "orchestration", "--delta", "0", "--effort", "high"], env);
+    const specific = run(["show"], env);
+    assert.match(specific.stdout, /5\.6 sol@high/);
+    assert.match(specific.stdout, /5\.6 terra@high/);
+    const general = run(["show", "--depth", "1"], env);
+    assert.match(general.stdout, /5\.6@high · orchestration/);
+    assert.doesNotMatch(general.stdout, /sol|terra/);
+  });
+});
+
+test("compare --by-complexity: rows are complexities", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "opus", "--tier", "t", "--complexity", "L", "--delta", "2"], env);
+    run(["log", "--model", "terra", "--tier", "t", "--complexity", "L", "--delta", "1"], env);
+    const r = run(["compare", "opus", "terra", "--by-complexity"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^complexity/m);
+    assert.match(r.stdout, /^L /m);
+  });
+});
