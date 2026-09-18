@@ -3,14 +3,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseArgs, validateDelta, buildRow, parseLines, filterByDate,
-  aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
+  aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv, csvEscape,
   DEFAULT_CONFIG, normalizeConfig, resolveEffort,
   modelParts, modelSegments, modelAtDepth, bucketKey,
   normalizeCutoff, parseNameDate, resolveCutoff, ageMonths, ageTier,
   effortWeight, lookupSeedCutoff, aggregateWeighted, weightedRows, stackedData,
   ageDecayFactor, aggregateDecayed, decayedRows,
   parseDims, buildTokens, aggregateDimension, dimensionRows, dimensionsPresent,
-  aggregateTokens, tokenRows, terciles, computeBadges,
+  aggregateTokens, tokenRows, terciles, computeBadges, parseLine, sanitizeRow,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -443,6 +443,40 @@ test("computeBadges: a metric with <3 buckets produces no tags for it", () => {
   ]), 1);
   const badges = computeBadges(scored);
   assert.deepEqual(badges.get("a · t"), []); // only 2 buckets → no quantile tags
+});
+
+// --- hardening --------------------------------------------------------------
+test("csvEscape: neutralizes formula injection, preserves negative numbers", () => {
+  assert.equal(csvEscape("=HYPERLINK(1)"), "'=HYPERLINK(1)");
+  assert.equal(csvEscape("+cmd"), "'+cmd");
+  assert.equal(csvEscape("@x"), "'@x");
+  assert.equal(csvEscape("-cmd"), "'-cmd");     // leading '-' that isn't a number
+  assert.equal(csvEscape("-1.5000"), "-1.5000"); // negative number left intact
+  assert.equal(csvEscape("2.0000"), "2.0000");
+  assert.equal(csvEscape("opus 5"), "opus 5");   // ordinary text untouched
+  assert.equal(csvEscape('=a,b'), '"\'=a,b"');   // guarded AND quoted (has comma)
+});
+
+test("scorecardCsv: a formula-shaped model name is neutralized", () => {
+  const scored = scorecardRows(aggregate([{ model: "=cmd()", tier: "t", delta: 1 }]), 3);
+  const row = scorecardCsv(scored).split("\n")[1];
+  assert.match(row, /^'=cmd\(\) · t,/); // leading ' prefix neutralizes the formula
+});
+
+test("parseLine / sanitizeRow: strips control chars, validates delta", () => {
+  const good = parseLine(JSON.stringify({ model: "opus\u001b[31m 5", tier: "t\u0007", delta: 2, note: "hi\u0000" }));
+  assert.equal(good.row.model, "opus[31m 5"); // ESC stripped
+  assert.equal(good.row.tier, "t");            // BEL stripped
+  assert.equal(good.row.note, "hi");           // NUL stripped
+  assert.equal(good.row.delta, 2);
+  assert.equal(parseLine(""), null);           // blank line
+  assert.deepEqual(parseLine("{ not json"), { bad: true });
+  assert.deepEqual(parseLine(JSON.stringify({ model: "m", tier: "t", delta: "oops" })), { bad: true });
+});
+
+test("sanitizeRow: cleans control chars from dimension names", () => {
+  const r = sanitizeRow({ dims: { "correct\u001bness": 2 } });
+  assert.deepEqual(r.dims, { correctness: 2 });
 });
 
 // --- malformed / missing tolerance -----------------------------------------

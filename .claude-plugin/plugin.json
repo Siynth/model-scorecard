@@ -1,6 +1,6 @@
 {
   "name": "model-scorecard",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores + comparison. Free-form hierarchical family-first model names, effort-weighted + stacked + age-decayed views, dimension tags + token-efficiency (Δ/ktok) + derived ranking badges, model-age from knowledge cutoffs, customizable effort config, global append-only data in ~/.claude/scorecard/. Portable pure-Node core usable from any platform.",
   "author": { "name": "Siynth" },
   "commands": ["./commands/score-log.md", "./commands/score.md", "./commands/score-compare.md", "./commands/score-config.md"]

@@ -6,11 +6,12 @@
 // Model names are free-form and hierarchical (no registry — a model is "defined"
 // by logging it). Ranking is always per-(model x tier); --global is a caveated
 // coarse extra, never the headline.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, createReadStream } from "node:fs";
 import { dirname } from "node:path";
+import { createInterface } from "node:readline";
 import {
   DATA_FILE, CONFIG_FILE, DEFAULT_CONFIG, normalizeConfig,
-  parseArgs, buildRow, parseLines, filterByDate,
+  parseArgs, buildRow, parseLine, filterByDate,
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
   aggregateWeighted, weightedRows, stackedData, aggregateDecayed, decayedRows,
   aggregateDimension, dimensionRows, dimensionsPresent, aggregateTokens, tokenRows,
@@ -19,14 +20,23 @@ import {
 
 const [sub, ...rest] = process.argv.slice(2);
 
-function readRows() {
-  let text;
-  try {
-    text = readFileSync(DATA_FILE, "utf8");
-  } catch {
-    return { rows: [], bad: [], missing: true };
+// Stream the append-only log line-by-line so we never hold the whole file as one
+// string (avoids V8's max-string-length cliff and keeps peak memory bounded as
+// the log grows). parseLine sanitizes + validates each row.
+async function readRows() {
+  if (!existsSync(DATA_FILE)) return { rows: [], bad: [], missing: true };
+  const rows = [];
+  const bad = [];
+  const rl = createInterface({ input: createReadStream(DATA_FILE, "utf8"), crlfDelay: Infinity });
+  let i = 0;
+  for await (const line of rl) {
+    i += 1;
+    const res = parseLine(line);
+    if (!res) continue;
+    if (res.bad) bad.push(i);
+    else rows.push(res.row);
   }
-  return { ...parseLines(text), missing: false };
+  return { rows, bad, missing: false };
 }
 
 function readConfig() {
@@ -68,12 +78,12 @@ function cmdLog(argv) {
 }
 
 // --- show -------------------------------------------------------------------
-function cmdShow(argv) {
+async function cmdShow(argv) {
   const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed", "efficiency", "badges"]);
   const config = readConfig();
   const minN = opts["min-n"] != null ? Number(opts["min-n"]) : config.minN;
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
-  const { rows: parsed, bad, missing } = readRows();
+  const { rows: parsed, bad, missing } = await readRows();
   if (missing) {
     console.log("no scorecard data yet:", DATA_FILE);
     return;
@@ -218,7 +228,7 @@ function cmdShow(argv) {
 }
 
 // --- compare ----------------------------------------------------------------
-function cmdCompare(argv) {
+async function cmdCompare(argv) {
   const { opts, positional: models } = parseArgs(argv, ["global", "by-complexity", "by-age"]);
   if (models.length < 2) {
     console.error("give 2+ model names to compare, optionally --global / --by-complexity / --by-age");
@@ -228,7 +238,7 @@ function cmdCompare(argv) {
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
   const groupBy = opts["by-complexity"] ? "complexity" : opts["by-age"] ? "age" : "tier";
   const metric = opts.dim ? `dim:${opts.dim}` : "delta";
-  const { rows: parsed, missing } = readRows();
+  const { rows: parsed, missing } = await readRows();
   if (missing) {
     console.log("no scorecard data yet");
     return;
@@ -326,8 +336,8 @@ local, no provider API. Effort default/floor/max are set with \`config\`, not ba
 
 switch (sub) {
   case "log": cmdLog(rest); break;
-  case "show": case "score": cmdShow(rest); break;
-  case "compare": cmdCompare(rest); break;
+  case "show": case "score": await cmdShow(rest); break;
+  case "compare": await cmdCompare(rest); break;
   case "config": cmdConfig(rest); break;
   case "help": case "--help": case "-h": case undefined:
     console.log(HELP); break;

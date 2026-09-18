@@ -3,14 +3,14 @@
   "owner": { "name": "Siynth" },
   "metadata": {
     "description": "Rate subagent models vs. expectation, per (model x tier).",
-    "version": "0.8.0"
+    "version": "0.9.0"
   },
   "plugins": [
     {
       "name": "model-scorecard",
       "source": "./",
       "description": "Rate each subagent's output vs. EXPECTATION for that model/task (-3..+3); score is the average per (model x tier) — never a global rank. Free-form hierarchical family-first model names, effort-weighted + stacked + age-decayed views, dimension tags + token-efficiency (Δ/ktok) + derived ranking badges, model-age from knowledge cutoffs, customizable effort config, global data, portable pure-Node core.",
-      "version": "0.8.0"
+      "version": "0.9.0"
     }
   ]
 }

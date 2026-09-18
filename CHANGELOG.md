@@ -2,6 +2,28 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.9.0] — 2026-09-18
+
+### Security / hardening
+- **CSV formula-injection guard.** `show --csv` now prefixes any field that
+  starts with `= + @` (or a leading tab/CR, or a `-` that isn't a number) with a
+  single quote, so a crafted model/dimension name can't execute as a formula when
+  the export is opened in Excel/Sheets. Negative numbers are left intact.
+- **Control-character sanitization on read.** Every rating's string fields (and
+  dimension names) are stripped of C0/DEL control characters when loaded,
+  neutralizing terminal/ANSI-escape injection from an imported `.jsonl` and
+  preventing invisible characters from silently splitting buckets.
+
+### Changed (performance / scale)
+- **Streaming line reader.** `show`/`compare` now read the append-only log
+  line-by-line (`node:readline`) instead of loading the whole file as one string,
+  keeping peak memory bounded and avoiding V8's max-string-length limit as the log
+  grows large. Still zero-dependency; pure `parseLine`/`parseLines` remain in the
+  lib for tests and small reads.
+
+### Notes
+- 88 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.8.0] — 2026-09-18
 
 ### Added

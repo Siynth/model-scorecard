@@ -452,27 +452,52 @@ export function computeBadges(scored, { minSet = 3 } = {}) {
 }
 
 
-// Tolerant JSONL parse: skip blank / unparseable / non-numeric-delta lines.
-// Returns kept rows plus 1-based bad line numbers.
+// Control characters never legitimately appear in a logged field; stripping them
+// on read neutralizes terminal/ANSI-escape injection from an imported .jsonl and
+// keeps buckets from being split by invisible characters.
+const CTRL_CHARS = /[\u0000-\u001F\u007F]/g;
+const STRING_FIELDS = ["date", "model", "effort", "tier", "task", "complexity", "cutoff", "note"];
+
+export function sanitizeRow(r) {
+  for (const k of STRING_FIELDS) {
+    if (typeof r[k] === "string") r[k] = r[k].replace(CTRL_CHARS, "");
+  }
+  if (r.dims && typeof r.dims === "object" && !Array.isArray(r.dims)) {
+    const clean = {};
+    for (const [k, v] of Object.entries(r.dims)) clean[String(k).replace(CTRL_CHARS, "")] = v;
+    r.dims = clean;
+  }
+  return r;
+}
+
+// Parse ONE JSONL line. Returns { row } for a good row, { bad: true } for a
+// blank-JSON/unparseable/non-numeric-delta line, or null for an empty line.
+// Sanitizes string fields; enforces a finite numeric delta.
+export function parseLine(line) {
+  if (!line || !line.trim()) return null;
+  let r;
+  try {
+    r = JSON.parse(line);
+  } catch {
+    return { bad: true };
+  }
+  const d = Number(r.delta);
+  if (!Number.isFinite(d)) return { bad: true };
+  r.delta = d;
+  return { row: sanitizeRow(r) };
+}
+
+// Tolerant JSONL parse over a whole text blob (used by tests and small reads;
+// the CLI streams line-by-line via parseLine for large files). Returns kept rows
+// plus 1-based bad line numbers.
 export function parseLines(text) {
   const rows = [];
   const bad = [];
   text.split("\n").forEach((l, i) => {
-    if (!l.trim()) return;
-    let r;
-    try {
-      r = JSON.parse(l);
-    } catch {
-      bad.push(i + 1);
-      return;
-    }
-    const d = Number(r.delta);
-    if (!Number.isFinite(d)) {
-      bad.push(i + 1);
-      return;
-    }
-    r.delta = d;
-    rows.push(r);
+    const res = parseLine(l);
+    if (!res) return;
+    if (res.bad) bad.push(i + 1);
+    else rows.push(res.row);
   });
   return { rows, bad };
 }
@@ -706,7 +731,12 @@ export function signed(n) {
 }
 
 export function csvEscape(v) {
-  const s = String(v ?? "");
+  let s = String(v ?? "");
+  // Neutralize spreadsheet formula injection: a field starting with = + @ (or a
+  // leading tab/CR), or a leading '-' that is NOT a plain number, is prefixed
+  // with a single quote so Excel/Sheets treats it as text. Negative numbers
+  // (e.g. "-1.5000") are left intact.
+  if (/^[=+@\t\r]/.test(s) || (/^-/.test(s) && !/^-?\d/.test(s))) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

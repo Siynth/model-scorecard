@@ -108,14 +108,21 @@ The headline Δ stays one honest number vs expectation, but a rating can also ca
 ## Data
 Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — persists across every project and platform). Malformed lines are skipped, not fatal; a missing file is reported gracefully.
 
+## Security & scale
+Deliberately small attack surface: pure Node, **zero dependencies, fully offline** (no network, no `eval`, no `child_process`), fixed data paths under `~/.claude/scorecard/`. Ratings data lives outside the repo, so nothing personal ships with the plugin. Two hardening measures for when data crosses a trust boundary (importing a shared log, or opening an export in a spreadsheet):
+- **CSV formula-injection guard** — `show --csv` neutralizes fields that would execute as spreadsheet formulas (`=`, `+`, `@`, leading tab/CR, or a non-numeric `-`), leaving real negative numbers intact.
+- **Control-character sanitization on read** — C0/DEL bytes are stripped from string fields (and dimension names) as the log is parsed, defusing terminal/ANSI-escape injection and stopping invisible characters from splitting buckets.
+
+For scale, `show`/`compare` **stream** the log line-by-line rather than loading it whole, so memory stays bounded and there's no max-string-length ceiling as the log grows. All aggregation is a single O(n) pass; process startup dominates runtime at realistic sizes.
+
 ## Develop / test
 ```
 npm test        # or: node --test
 ```
-Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 84 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup, stacked grid, and age-decay), dimension tags + token efficiency + derived badges, compare (per-tier + per-complexity + per-age + per-dimension + `--global`), CSV, and malformed/missing-file tolerance.
+Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 88 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup, stacked grid, and age-decay), dimension tags + token efficiency + derived badges, compare (per-tier + per-complexity + per-age + per-dimension + `--global`), CSV + formula-injection guard, control-character sanitization, and malformed/missing-file tolerance.
 
 ## Status
-v0.8.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical family-first model names with `--depth`, effort-weighted + stacked-complexity + age-decayed views, dimension tags + token-efficiency (Δ/ktok) + derived ranking badges, a −3..+3 rating scale, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.9.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical family-first model names with `--depth`, effort-weighted + stacked-complexity + age-decayed views, dimension tags + token-efficiency (Δ/ktok) + derived ranking badges, a −3..+3 rating scale, model age from knowledge cutoffs (with a bundled seed), customizable effort config, hardened CSV export + control-char sanitization, streaming reads for scale, tested (`node --test`), git-versioned, installable via marketplace manifest.
 
 ## License
 MIT — see [`LICENSE`](LICENSE).
