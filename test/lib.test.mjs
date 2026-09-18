@@ -10,7 +10,7 @@ import {
   effortWeight, lookupSeedCutoff, aggregateWeighted, weightedRows, stackedData,
   ageDecayFactor, aggregateDecayed, decayedRows,
   parseDims, buildTokens, aggregateDimension, dimensionRows, dimensionsPresent,
-  aggregateTokens, tokenRows,
+  aggregateTokens, tokenRows, terciles, computeBadges,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -372,6 +372,79 @@ test("aggregateTokens/tokenRows: per-bucket avgs, ranked by total ascending", ()
   assert.equal(scored[1].key, "heavy · t");
 });
 
+test("tokenRows: deltaPerKtok = avg Δ per 1k total tokens", () => {
+  const rows = [
+    { model: "m", effort: "", tier: "t", delta: 2, tokens: { total: 1000 } },
+    { model: "m", effort: "", tier: "t", delta: 2, tokens: { total: 3000 } },
+  ];
+  const r = tokenRows(aggregateTokens(rows))[0];
+  assert.equal(r.avgTotal, 2000);
+  assert.equal(r.avgDelta, 2);
+  assert.ok(Math.abs(r.deltaPerKtok - 1) < 1e-9); // 2 / (2000/1000)
+});
+
+test("aggregate: collects token totals and per-dim sums for CSV/badges", () => {
+  const rows = [
+    { model: "m", effort: "", tier: "t", delta: 2, tokens: { in: 500, out: 100, total: 600 }, dims: { correctness: 3 } },
+    { model: "m", effort: "", tier: "t", delta: 0, tokens: { in: 700, out: 300, total: 1000 }, dims: { correctness: 1 } },
+  ];
+  const r = scorecardRows(aggregate(rows), 3)[0];
+  assert.equal(r.avgTokens, 800);       // (600+1000)/2
+  assert.equal(r.avgTokensOut, 200);    // (100+300)/2
+  assert.equal(r.dims.correctness, 2);  // (3+1)/2
+});
+
+test("scorecardCsv: token and dims columns populated", () => {
+  const scored = scorecardRows(
+    aggregate([{ model: "m", tier: "t", delta: 2, tokens: { in: 900, out: 100, total: 1000 }, dims: { correctness: 2 } }]),
+    3,
+  );
+  const row = scorecardCsv(scored).split("\n")[1];
+  assert.match(row, /,1000,100,correctness:2\.00$/); // avg_tokens, avg_tokens_out, dims
+});
+
+test("compareData: --dim metric compares a dimension instead of Δ", () => {
+  const rows = [
+    { model: "opus", effort: "", tier: "t", delta: -2, dims: { correctness: 3 } },
+    { model: "terra", effort: "", tier: "t", delta: 2, dims: { correctness: 1 } },
+    { model: "terra", effort: "", tier: "t", delta: 2 }, // no dim → skipped for the dim metric
+  ];
+  const data = compareData(rows, ["opus", "terra"], { metric: "dim:correctness" });
+  assert.equal(data.opus.groups.t.sum, 3);  // correctness, not delta (-2)
+  assert.equal(data.terra.groups.t.sum, 1); // only the row that carried the dim
+  assert.equal(data.terra.groups.t.n, 1);
+});
+
+test("terciles: bottom/top-third boundaries, null under 3 values", () => {
+  assert.equal(terciles([1, 2]), null);
+  const t = terciles([10, 20, 30, 40, 50, 60]);
+  assert.ok(t.low <= 20 && t.high >= 50); // extremes fall in the outer thirds
+});
+
+test("computeBadges: derives over/under-tier, token-lean/heavy, dim strength", () => {
+  const rows = [
+    { model: "a", effort: "", tier: "t", delta: 3, tokens: { total: 500, out: 50 }, dims: { correctness: 3 } },
+    { model: "b", effort: "", tier: "t", delta: 0, tokens: { total: 5000, out: 500 }, dims: { correctness: 1 } },
+    { model: "c", effort: "", tier: "t", delta: -3, tokens: { total: 9000, out: 900 }, dims: { correctness: -2 } },
+  ];
+  const scored = scorecardRows(aggregate(rows), 1);
+  const badges = computeBadges(scored);
+  assert.ok(badges.get("a · t").includes("over-tier"));
+  assert.ok(badges.get("a · t").includes("token-lean"));
+  assert.ok(badges.get("a · t").includes("correctness-strong"));
+  assert.ok(badges.get("c · t").includes("under-tier"));
+  assert.ok(badges.get("c · t").includes("token-heavy"));
+});
+
+test("computeBadges: a metric with <3 buckets produces no tags for it", () => {
+  const scored = scorecardRows(aggregate([
+    { model: "a", effort: "", tier: "t", delta: 2 },
+    { model: "b", effort: "", tier: "t", delta: 0 },
+  ]), 1);
+  const badges = computeBadges(scored);
+  assert.deepEqual(badges.get("a · t"), []); // only 2 buckets → no quantile tags
+});
+
 // --- malformed / missing tolerance -----------------------------------------
 test("parseLines: skips blank, unparseable, and non-numeric-delta rows", () => {
   const text = [
@@ -515,9 +588,9 @@ test("scorecardCsv: header + escaped rows", () => {
   );
   const csv = scorecardCsv(scored);
   const [header, row] = csv.split("\n");
-  assert.equal(header, "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier");
-  // comma-containing bucket quoted; no cutoff -> empty cutoff/age/tier columns
-  assert.match(row, /^"a,b · t",1\.0000,1,true,S:1,,,$/);
+  assert.equal(header, "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier,avg_tokens,avg_tokens_out,dims");
+  // comma-containing bucket quoted; no cutoff/tokens/dims -> trailing empty columns
+  assert.match(row, /^"a,b · t",1\.0000,1,true,S:1,,,,,,$/);
 });
 
 test("scorecardCsv: cutoff and derived age columns populated", () => {
@@ -527,5 +600,5 @@ test("scorecardCsv: cutoff and derived age columns populated", () => {
     new Date("2026-09-18T00:00:00Z"),
   );
   const row = scorecardCsv(scored).split("\n")[1];
-  assert.match(row, /,2026-06,3,recent$/); // 3 months old -> recent
+  assert.match(row, /,2026-06,3,recent,,,$/); // 3 months old -> recent; no tokens/dims after
 });

@@ -379,11 +379,12 @@ export function aggregateTokens(rows, depth = 0) {
     if (!r.tokens) continue;
     const t = r.tokens;
     const key = bucketKey(r, depth);
-    const b = buckets.get(key) || { in: 0, out: 0, cache: 0, total: 0, nIn: 0, nOut: 0, nCache: 0, n: 0 };
+    const b = buckets.get(key) || { in: 0, out: 0, cache: 0, total: 0, nIn: 0, nOut: 0, nCache: 0, n: 0, deltaSum: 0 };
     if (Number.isFinite(t.in)) { b.in += t.in; b.nIn += 1; }
     if (Number.isFinite(t.out)) { b.out += t.out; b.nOut += 1; }
     if (Number.isFinite(t.cache)) { b.cache += t.cache; b.nCache += 1; }
     b.total += Number.isFinite(t.total) ? t.total : (t.in || 0) + (t.out || 0);
+    b.deltaSum += r.delta;
     b.n += 1;
     buckets.set(key, b);
   }
@@ -391,20 +392,66 @@ export function aggregateTokens(rows, depth = 0) {
 }
 
 // Token rows sorted by avg total ASCENDING (fewer tokens = more efficient).
+// deltaPerKtok = avg Δ per 1k total tokens (value earned per token spent).
 export function tokenRows(buckets) {
   return [...buckets.entries()]
-    .map(([k, b]) => ({
-      key: k,
-      n: b.n,
-      avgIn: b.nIn ? b.in / b.nIn : null,
-      avgOut: b.nOut ? b.out / b.nOut : null,
-      avgCache: b.nCache ? b.cache / b.nCache : null,
-      avgTotal: b.total / b.n,
-    }))
+    .map(([k, b]) => {
+      const avgTotal = b.total / b.n;
+      const avgDelta = b.deltaSum / b.n;
+      return {
+        key: k,
+        n: b.n,
+        avgIn: b.nIn ? b.in / b.nIn : null,
+        avgOut: b.nOut ? b.out / b.nOut : null,
+        avgCache: b.nCache ? b.cache / b.nCache : null,
+        avgTotal,
+        avgDelta,
+        deltaPerKtok: avgTotal > 0 ? avgDelta / (avgTotal / 1000) : null,
+      };
+    })
     .sort((a, b) => a.avgTotal - b.avgTotal);
 }
 
-// --- reading ----------------------------------------------------------------
+// --- derived badges ---------------------------------------------------------
+// Boundary values for the bottom / top third by sorted position. null when
+// fewer than 3 values (quantiles are meaningless on a tiny set).
+export function terciles(values) {
+  const v = [...values].sort((a, b) => a - b);
+  const n = v.length;
+  if (n < 3) return null;
+  return { low: v[Math.floor((n - 1) / 3)], high: v[Math.ceil((2 * (n - 1)) / 3)] };
+}
+
+// Per-bucket "addendum" tags computed from where each bucket ranks among the set
+// on each available metric (overall Δ, token totals, output tokens, and every
+// logged dimension). A metric only produces tags when >= minSet buckets carry it.
+// Returns Map<bucketKey, string[]>. Purely derived — nothing is stored.
+export function computeBadges(scored, { minSet = 3 } = {}) {
+  const badges = new Map(scored.map((r) => [r.key, []]));
+  const tagBand = (subset, valueOf, lowTag, highTag) => {
+    if (subset.length < minSet) return;
+    const t = terciles(subset.map(valueOf));
+    if (!t) return;
+    for (const r of subset) {
+      const v = valueOf(r);
+      if (v >= t.high) badges.get(r.key).push(highTag);
+      else if (v <= t.low) badges.get(r.key).push(lowTag);
+    }
+  };
+
+  tagBand(scored, (r) => r.avg, "under-tier", "over-tier");
+  tagBand(scored.filter((r) => r.avgTokens != null), (r) => r.avgTokens, "token-lean", "token-heavy");
+  tagBand(scored.filter((r) => r.avgTokensOut != null), (r) => r.avgTokensOut, "output-lean", "output-heavy");
+
+  const dimNames = [...new Set(scored.flatMap((r) => Object.keys(r.dims || {})))].sort();
+  for (const name of dimNames) {
+    const withDim = scored.filter((r) => r.dims && Number.isFinite(r.dims[name]));
+    tagBand(withDim, (r) => r.dims[name], `${name}-weak`, `${name}-strong`);
+  }
+  return badges;
+}
+
+
 // Tolerant JSONL parse: skip blank / unparseable / non-numeric-delta lines.
 // Returns kept rows plus 1-based bad line numbers.
 export function parseLines(text) {
@@ -454,11 +501,24 @@ export function aggregate(rows, depth = 0) {
   const buckets = new Map();
   for (const r of rows) {
     const key = bucketKey(r, depth);
-    const b = buckets.get(key) || { sum: 0, n: 0, comp: {}, cutoff: "" };
+    const b = buckets.get(key) ||
+      { sum: 0, n: 0, comp: {}, cutoff: "", tokTotal: 0, tokTotalN: 0, tokOut: 0, tokOutN: 0, dims: {} };
     b.sum += r.delta;
     b.n += 1;
     if (r.complexity) b.comp[r.complexity] = (b.comp[r.complexity] || 0) + 1;
     if (r.cutoff && r.cutoff > b.cutoff) b.cutoff = r.cutoff;
+    if (r.tokens) {
+      const tot = Number.isFinite(r.tokens.total) ? r.tokens.total : (r.tokens.in || 0) + (r.tokens.out || 0);
+      b.tokTotal += tot; b.tokTotalN += 1;
+      if (Number.isFinite(r.tokens.out)) { b.tokOut += r.tokens.out; b.tokOutN += 1; }
+    }
+    if (r.dims) {
+      for (const [name, v] of Object.entries(r.dims)) {
+        if (!Number.isFinite(Number(v))) continue;
+        b.dims[name] = b.dims[name] || { sum: 0, n: 0 };
+        b.dims[name].sum += Number(v); b.dims[name].n += 1;
+      }
+    }
     buckets.set(key, b);
   }
   return buckets;
@@ -478,6 +538,9 @@ export function scorecardRows(buckets, minN = MIN_N, now = new Date()) {
         cutoff: b.cutoff || "",
         ageMonths: age,
         ageTier: ageTier(age),
+        avgTokens: b.tokTotalN ? b.tokTotal / b.tokTotalN : null,
+        avgTokensOut: b.tokOutN ? b.tokOut / b.tokOutN : null,
+        dims: Object.fromEntries(Object.entries(b.dims || {}).map(([name, d]) => [name, d.sum / d.n])),
       };
     })
     .sort((a, b) => b.avg - a.avg);
@@ -595,12 +658,22 @@ export function stackedData(rows, depth = 0) {
 // --- compare ----------------------------------------------------------------
 // model → { groups: {label:{sum,n}}, all:{sum,n} }. Axis is tier (default),
 // complexity, or age; models are matched at `depth`.
-export function compareData(rows, models, { depth = 0, groupBy = "tier", now = new Date() } = {}) {
+export function compareData(rows, models, { depth = 0, groupBy = "tier", now = new Date(), metric = "delta" } = {}) {
+  // Value each row contributes: overall Δ by default, or a named dimension
+  // ("dim:<name>", rows lacking it skipped).
+  const valueOf = typeof metric === "string" && metric.startsWith("dim:")
+    ? (r) => {
+        const v = r.dims?.[metric.slice(4)];
+        return Number.isFinite(Number(v)) ? Number(v) : null;
+      }
+    : (r) => r.delta;
   const data = {};
   for (const r of rows) {
     const md = modelAtDepth(r.model, depth);
     const m = models.find((x) => x === md || `${md}@${r.effort}` === x);
     if (!m) continue;
+    const val = valueOf(r);
+    if (val == null) continue; // row lacks the requested metric
     data[m] = data[m] || { groups: {}, all: { sum: 0, n: 0 } };
     let label;
     if (groupBy === "complexity") label = r.complexity;
@@ -608,9 +681,9 @@ export function compareData(rows, models, { depth = 0, groupBy = "tier", now = n
     else label = r.tier;
     label = label || "?";
     data[m].groups[label] = data[m].groups[label] || { sum: 0, n: 0 };
-    data[m].groups[label].sum += r.delta;
+    data[m].groups[label].sum += val;
     data[m].groups[label].n++;
-    data[m].all.sum += r.delta;
+    data[m].all.sum += val;
     data[m].all.n++;
   }
   return data;
@@ -639,11 +712,14 @@ export function csvEscape(v) {
 
 // CSV of the per-bucket scorecard.
 export function scorecardCsv(rows) {
-  const header = "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier";
+  const header = "bucket,avg_delta,n,low_confidence,complexity,cutoff,age_months,age_tier,avg_tokens,avg_tokens_out,dims";
   const body = rows.map((r) => {
     const comp = Object.entries(r.comp).map(([c, n]) => `${c}:${n}`).join(" ");
+    const dims = Object.entries(r.dims || {}).map(([k, v]) => `${k}:${v.toFixed(2)}`).join(" ");
     return [r.key, r.avg.toFixed(4), r.n, r.lowConfidence, comp,
-      r.cutoff || "", r.ageMonths == null ? "" : r.ageMonths, r.ageTier || ""]
+      r.cutoff || "", r.ageMonths == null ? "" : r.ageMonths, r.ageTier || "",
+      r.avgTokens == null ? "" : Math.round(r.avgTokens),
+      r.avgTokensOut == null ? "" : Math.round(r.avgTokensOut), dims]
       .map(csvEscape).join(",");
   });
   return [header, ...body].join("\n");

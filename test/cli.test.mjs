@@ -307,3 +307,37 @@ test("log: rejects negative token count, writes nothing", () => {
     assert.match(r.stderr, /non-negative/);
   });
 });
+
+test("show --efficiency: includes a Δ/ktok column", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "m", "--tier", "t", "--delta", "2", "--tokens", "1000"], env);
+    const r = run(["show", "--efficiency"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /Δ\/ktok/);
+    assert.match(r.stdout, /Δ\/ktok = avg Δ per 1k/);
+  });
+});
+
+test("show --badges: derives ranking tags across 3+ buckets", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "a", "--tier", "t", "--delta", "3", "--tokens", "500"], env);
+    run(["log", "--model", "b", "--tier", "t", "--delta", "0", "--tokens", "5000"], env);
+    run(["log", "--model", "c", "--tier", "t", "--delta", "-3", "--tokens", "9000"], env);
+    const r = run(["show", "--badges"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /derived tags/);
+    assert.match(r.stdout, /over-tier/);
+    assert.match(r.stdout, /token-lean/);
+  });
+});
+
+test("compare --dim: cells compare a dimension instead of Δ", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "opus", "--tier", "t", "--delta", "-2", "--dims", "correctness:3"], env);
+    run(["log", "--model", "terra", "--tier", "t", "--delta", "2", "--dims", "correctness:1"], env);
+    const r = run(["compare", "opus", "terra", "--dim", "correctness"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /cells = avg "correctness"/);
+    assert.match(r.stdout, /\+3\.00/); // opus correctness, not its -2 delta
+  });
+});

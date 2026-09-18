@@ -2,6 +2,24 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.8.0] — 2026-09-18
+
+### Added
+- **`show --badges`** — derives per-bucket "addendum" tags from where each bucket
+  ranks among the set (top/bottom third) on Δ (`over-tier`/`under-tier`), tokens
+  (`token-lean`/`token-heavy`, `output-lean`/`output-heavy`), and each logged
+  dimension (`<name>-strong`/`<name>-weak`). A metric needs ≥3 buckets to tag.
+  Computed at read time; nothing stored.
+- **`compare --dim <name>`** — the side-by-side matrix can compare one dimension's
+  average instead of Δ (parity with `show --dim`).
+- **`Δ/ktok` column on `show --efficiency`** — avg Δ earned per 1k total tokens.
+- **dims + token columns in `show --csv`** — `avg_tokens`, `avg_tokens_out`, and a
+  `dims` summary now export alongside the per-bucket score.
+
+### Notes
+- Badges/efficiency/dims stay orthogonal to Δ; ranking is still per-(model × tier).
+- 84 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.7.0] — 2026-09-18
 
 ### Added

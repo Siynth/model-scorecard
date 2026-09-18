@@ -14,6 +14,7 @@ import {
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
   aggregateWeighted, weightedRows, stackedData, aggregateDecayed, decayedRows,
   aggregateDimension, dimensionRows, dimensionsPresent, aggregateTokens, tokenRows,
+  computeBadges,
 } from "./lib.mjs";
 
 const [sub, ...rest] = process.argv.slice(2);
@@ -68,7 +69,7 @@ function cmdLog(argv) {
 
 // --- show -------------------------------------------------------------------
 function cmdShow(argv) {
-  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed", "efficiency"]);
+  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed", "efficiency", "badges"]);
   const config = readConfig();
   const minN = opts["min-n"] != null ? Number(opts["min-n"]) : config.minN;
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
@@ -79,6 +80,23 @@ function cmdShow(argv) {
   }
   const rows = filterByDate(parsed, { since: opts.since, until: opts.until });
   const pad = (s, n) => String(s).padEnd(n);
+
+  if (opts.badges) {
+    const scored = scorecardRows(aggregate(rows, depth), minN);
+    const badges = computeBadges(scored);
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    console.log(pad("model@effort · tier", 40) + "derived tags" + depthNote);
+    console.log("-".repeat(72));
+    for (const r of scored) {
+      const tags = badges.get(r.key) || [];
+      console.log(pad(r.key, 40) + (tags.length ? tags.join(", ") : "—"));
+    }
+    if (!scored.length) console.log("(no rows yet)");
+    console.log(`\nTags are computed from each bucket's rank among the set (top/bottom third) on Δ, tokens, and each dimension.`);
+    console.log(`A metric needs ≥3 buckets carrying it to produce tags. Derived only — nothing is stored.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
 
   if (opts.dim) {
     const dim = opts.dim;
@@ -109,12 +127,13 @@ function cmdShow(argv) {
     }
     const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
     const num = (v) => (v == null ? "-" : Math.round(v).toLocaleString());
-    console.log(pad("model@effort · tier", 40) + pad("in", 10) + pad("out", 10) + pad("cache", 10) + pad("total", 10) + "n" + depthNote);
-    console.log("-".repeat(84));
+    console.log(pad("model@effort · tier", 40) + pad("in", 10) + pad("out", 10) + pad("cache", 10) + pad("total", 10) + pad("Δ/ktok", 10) + "n" + depthNote);
+    console.log("-".repeat(94));
     for (const r of scored) {
-      console.log(pad(r.key, 40) + pad(num(r.avgIn), 10) + pad(num(r.avgOut), 10) + pad(num(r.avgCache), 10) + pad(num(r.avgTotal), 10) + r.n);
+      const perk = r.deltaPerKtok == null ? "-" : signed(r.deltaPerKtok);
+      console.log(pad(r.key, 40) + pad(num(r.avgIn), 10) + pad(num(r.avgOut), 10) + pad(num(r.avgCache), 10) + pad(num(r.avgTotal), 10) + pad(perk, 10) + r.n);
     }
-    console.log(`\nAvg tokens per rating, ranked by total ASCENDING (fewer = more efficient). All local, from logged counts.`);
+    console.log(`\nAvg tokens per rating, ranked by total ASCENDING (fewer = more efficient). Δ/ktok = avg Δ per 1k total tokens. All local.`);
     if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
     return;
   }
@@ -208,24 +227,26 @@ function cmdCompare(argv) {
   const config = readConfig();
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
   const groupBy = opts["by-complexity"] ? "complexity" : opts["by-age"] ? "age" : "tier";
+  const metric = opts.dim ? `dim:${opts.dim}` : "delta";
   const { rows: parsed, missing } = readRows();
   if (missing) {
     console.log("no scorecard data yet");
     return;
   }
   const rows = filterByDate(parsed, { since: opts.since, until: opts.until });
-  const data = compareData(rows, models, { depth, groupBy });
+  const data = compareData(rows, models, { depth, groupBy, metric });
   const groups = groupsOf(data, models);
 
   const pad = (s, n) => String(s).padEnd(n);
   const axis = groupBy === "complexity" ? "complexity" : groupBy === "age" ? "age" : "tier";
+  const valueNote = opts.dim ? ` (cells = avg "${opts.dim}")` : "";
   console.log(pad(axis, 26) + models.map((m) => pad(m, 16)).join(""));
   console.log("-".repeat(26 + 16 * models.length));
   for (const g of groups) {
     console.log(pad(g, 26) + models.map((m) => pad(avgLabel(data[m]?.groups[g]), 16)).join(""));
   }
   if (!groups.length) console.log("(no data for these models yet)");
-  console.log(`\nCompare WITHIN the same ${axis} (row). '-' = no data for that model/${axis}.`);
+  console.log(`\nCompare WITHIN the same ${axis} (row)${valueNote}. '-' = no data for that model/${axis}.`);
   if (depth) console.log(`Models matched at hierarchy depth ${depth}.`);
   if (opts.global) {
     console.log("\n-- GLOBAL (mixes task types; coarse, use with care) --");
@@ -282,8 +303,8 @@ const HELP = `model-scorecard — rate subagent models vs. expectation, per (mod
                         [--dims "correctness:2,efficiency:-1,..."] \\
                         [--tokens N | --tokens-in N --tokens-out N] [--cache-hits N] [--note "..."]
   scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] \\
-                        [--csv] [--weighted] [--stacked] [--decayed] [--dim <name>] [--efficiency]
-  scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since D] [--until D]
+                        [--csv] [--weighted] [--stacked] [--decayed] [--dim <name>] [--efficiency] [--badges]
+  scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--dim <name>] [--depth <N>] [--since D] [--until D]
   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \\
                         [--effort-default e] [--default-depth N] [--min-n k] [--age-decay f] [--reset]
 
@@ -292,10 +313,12 @@ Model names are free-form AND hierarchical — log family-first ("opus 5", "sonn
 5.1") so --depth 1 rolls a family's versions under "opus"/"sonnet". --depth 0
 (default) = full name (most specific).
 --dims adds optional per-facet sub-scores (same -3..3 scale, free-form names);
-show --dim <name> ranks by one facet. --tokens/-in/-out + --cache-hits record
-counts you were given; show --efficiency ranks buckets by avg tokens (fewer =
-better). show --weighted (effort-weighted), --stacked (× complexity), --decayed
-(age toward 0) are the other lenses.
+show --dim <name> ranks by one facet (compare --dim <name> too). --tokens/-in/-out
++ --cache-hits record counts you were given; show --efficiency ranks buckets by
+avg tokens (fewer = better) with a Δ/ktok column. show --badges derives per-bucket
+tags from each bucket's rank (top/bottom third) on Δ, tokens, and dimensions.
+show --weighted (effort-weighted), --stacked (× complexity), --decayed (age toward
+0) are the other lenses.
 --cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01, or the
 bundled scripts/cutoffs.json seed) gives the model a knowledge-cutoff date;
 show/compare derive age (fresh/recent/aging/stale) from it against today — all
