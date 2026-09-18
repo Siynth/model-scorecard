@@ -1,5 +1,5 @@
 {
-  "_note": "User-editable seed of knowledge-cutoff dates (YYYY-MM), used only when a rating supplies neither --cutoff nor a date-shaped model name. Keys are matched exactly, then by hierarchical prefix (longest first), so 'gpt-5.6' answers for 'gpt-5.6-sol'. Verify/adjust against each provider's model card before trusting; these are illustrative starting values, not authoritative.",
+  "_note": "User-editable seed of knowledge-cutoff dates (YYYY-MM), used only when a rating supplies neither --cutoff nor a date-shaped model name. Keys are matched exactly, then by hierarchical prefix (longest first), so 'gpt-5.6' answers for 'gpt-5.6-sol'. The six entries below were verified against provider sources on 2026-09-18 (OpenAI/Anthropic docs, provider model cards); re-verify any you add, and prefer an explicit --cutoff when you know it.",
   "gpt-4o": "2023-10",
   "gpt-4-turbo": "2023-12",
   "o1": "2023-10",
