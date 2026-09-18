@@ -7,6 +7,7 @@ import {
   DEFAULT_CONFIG, normalizeConfig, resolveEffort,
   modelParts, modelSegments, modelAtDepth, bucketKey,
   normalizeCutoff, parseNameDate, resolveCutoff, ageMonths, ageTier,
+  effortWeight, lookupSeedCutoff, aggregateWeighted, weightedRows, stackedData,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -206,6 +207,70 @@ test("compareData: --by-age groups by age tier", () => {
   assert.equal(data.opus.groups.fresh.sum, 2);
   assert.equal(data.opus.groups.stale.sum, 0);
   assert.deepEqual(groupsOf(data, ["opus", "terra"]), ["fresh", "stale"]);
+});
+
+// --- effort weighting / seed cutoffs / weighted view / stacked --------------
+test("effortWeight: 1-based rank in scale; off-scale/empty weighs 1", () => {
+  assert.equal(effortWeight("minimal", DEFAULT_CONFIG), 1);
+  assert.equal(effortWeight("high", DEFAULT_CONFIG), 4);
+  assert.equal(effortWeight("", DEFAULT_CONFIG), 1);
+  assert.equal(effortWeight("bogus", DEFAULT_CONFIG), 1);
+  assert.equal(effortWeight("x", normalizeConfig({ effortScale: [] })), 1); // free-form
+});
+
+test("lookupSeedCutoff: exact then hierarchical-prefix match", () => {
+  const seed = { "gpt-5.6": "2026-01", "claude-3-5-sonnet": "2024-04" };
+  assert.equal(lookupSeedCutoff("gpt-5.6", seed), "2026-01"); // exact
+  assert.equal(lookupSeedCutoff("gpt-5.6-sol", seed), "2026-01"); // prefix
+  assert.equal(lookupSeedCutoff("claude-3-5-sonnet", seed), "2024-04");
+  assert.equal(lookupSeedCutoff("mystery-model", seed), ""); // no match
+  assert.equal(lookupSeedCutoff("gpt-5.6", { "gpt-5.6": "bad" }), ""); // malformed seed skipped
+});
+
+test("resolveCutoff: seed is the last resort after explicit and name", () => {
+  const seed = { opus: "2024-02" };
+  assert.equal(resolveCutoff("2025-05", "opus", seed), "2025-05"); // explicit wins
+  assert.equal(resolveCutoff("", "opus-2026-01", seed), "2026-01"); // name wins over seed
+  assert.equal(resolveCutoff("", "opus", seed), "2024-02"); // seed fallback
+  assert.equal(resolveCutoff("", "unknown", seed), ""); // nothing
+});
+
+test("buildRow: seed supplies cutoff when neither flag nor name has a date", () => {
+  const row = buildRow(
+    { model: "opus", tier: "t", delta: "0" },
+    DEFAULT_CONFIG, new Date("2026-09-18T00:00:00Z"), { opus: "2024-02" },
+  );
+  assert.equal(row.cutoff, "2024-02");
+});
+
+test("aggregateWeighted/weightedRows: folds efforts, weights Δ by effort rank", () => {
+  const rows = [
+    { model: "m", effort: "high", tier: "t", delta: 2 },    // weight 4
+    { model: "m", effort: "minimal", tier: "t", delta: -2 }, // weight 1
+  ];
+  const b = aggregateWeighted(rows, 0, DEFAULT_CONFIG).get("m · t");
+  assert.equal(b.n, 2);
+  assert.equal(b.wtot, 5);        // 4 + 1
+  assert.equal(b.wsum, 6);        // 4*2 + 1*-2
+  assert.deepEqual(b.eff, { high: 1, minimal: 1 });
+  const scored = weightedRows(aggregateWeighted(rows, 0, DEFAULT_CONFIG), 3);
+  assert.equal(scored[0].key, "m · t");
+  assert.ok(Math.abs(scored[0].weightedAvg - 1.2) < 1e-9); // 6/5, not the plain mean 0
+});
+
+test("stackedData: model rows × complexity cols with totals, S/M/L ordered", () => {
+  const rows = [
+    { model: "opus", effort: "high", tier: "t", complexity: "L", delta: 2 },
+    { model: "opus", effort: "high", tier: "t", complexity: "S", delta: 0 },
+    { model: "opus", effort: "high", tier: "t", complexity: "L", delta: 1 },
+  ];
+  const { rows: srows, cols } = stackedData(rows, 0);
+  assert.deepEqual(cols, ["S", "L"]); // preferred order, only present ones
+  const r = srows.find((x) => x.key === "opus@high · t");
+  assert.equal(r.byComp.L.sum, 3);
+  assert.equal(r.byComp.L.n, 2);
+  assert.equal(r.byComp.S.sum, 0);
+  assert.equal(r.total.n, 3);
 });
 
 // --- malformed / missing tolerance -----------------------------------------

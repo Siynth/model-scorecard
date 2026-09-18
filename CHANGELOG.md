@@ -2,6 +2,30 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.5.0] — 2026-09-18
+
+### Added
+- **Effort-weighted score view** — `show --weighted` folds the `@effort`
+  dimension back into a single `model · tier` bucket and weights each rating's Δ
+  by its effort rank (minimal=1 … high=4 by default), so a win earned at higher
+  effort counts for more. Answers "which model is best overall, crediting harder
+  efforts" without splitting by effort.
+- **Stacked depth × complexity report** — `show --stacked` renders a grid: each
+  bucket (`model@effort · tier`, at `--depth`) as a row, complexity classes
+  (S/M/L, ordered) as columns, plus an `all` total. Read a family's standing
+  across task sizes at a glance.
+- **Seed known model cutoffs** — a bundled, user-editable `scripts/cutoffs.json`
+  supplies a model's knowledge cutoff when a rating gives neither `--cutoff` nor a
+  date-shaped name. Matched by exact name then hierarchical prefix (longest
+  first), so `gpt-5.6` answers for `gpt-5.6-sol`. Precedence: `--cutoff` >
+  name-parsed > seed. Still fully offline; malformed seed entries are skipped, not
+  fatal. (Seed values are illustrative starting points — verify against provider
+  model cards.)
+
+### Notes
+- Ranking stays per-(model × tier); `--global` remains a caveated coarse extra.
+- 60 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.4.0] — 2026-09-18
 
 ### Added

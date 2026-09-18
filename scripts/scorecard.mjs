@@ -6,7 +6,7 @@
 //
 //   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \
 //                         [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
-//   scorecard.mjs show    [--since D] [--until D] [--depth N] [--min-n k] [--csv]
+//   scorecard.mjs show    [--since D] [--until D] [--depth N] [--min-n k] [--csv] [--weighted] [--stacked]
 //   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] \
 //                         [--depth N] [--since D] [--until D]
 //   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \
@@ -23,6 +23,7 @@ import {
   DATA_FILE, CONFIG_FILE, DEFAULT_CONFIG, normalizeConfig,
   parseArgs, buildRow, parseLines, filterByDate,
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
+  aggregateWeighted, weightedRows, stackedData,
 } from "./lib.mjs";
 
 const [sub, ...rest] = process.argv.slice(2);
@@ -50,12 +51,22 @@ function writeConfig(cfg) {
   writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
 }
 
+// Bundled seed of known knowledge cutoffs, shipped next to this script. Used only
+// as a last resort when a rating gives neither --cutoff nor a dated model name.
+function readSeed() {
+  try {
+    return JSON.parse(readFileSync(new URL("./cutoffs.json", import.meta.url), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 // --- log --------------------------------------------------------------------
 function cmdLog(argv) {
   const { opts } = parseArgs(argv);
   let row;
   try {
-    row = buildRow(opts, readConfig());
+    row = buildRow(opts, readConfig(), new Date(), readSeed());
   } catch (e) {
     console.error(e.message);
     process.exit(1);
@@ -67,7 +78,7 @@ function cmdLog(argv) {
 
 // --- show -------------------------------------------------------------------
 function cmdShow(argv) {
-  const { opts } = parseArgs(argv, ["csv"]);
+  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked"]);
   const config = readConfig();
   const minN = opts["min-n"] != null ? Number(opts["min-n"]) : config.minN;
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
@@ -77,13 +88,52 @@ function cmdShow(argv) {
     return;
   }
   const rows = filterByDate(parsed, { since: opts.since, until: opts.until });
+  const pad = (s, n) => String(s).padEnd(n);
+
+  if (opts.stacked) {
+    const { rows: srows, cols } = stackedData(rows, depth);
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    const colw = 14;
+    console.log(pad("model@effort · tier", 40) + cols.map((c) => pad(c, colw)).join("") + "all" + depthNote);
+    console.log("-".repeat(40 + colw * cols.length + 12));
+    for (const r of srows) {
+      console.log(
+        pad(r.key, 40) +
+          cols.map((c) => pad(avgLabel(r.byComp[c]), colw)).join("") +
+          avgLabel(r.total),
+      );
+    }
+    if (!srows.length) console.log("(no rows yet)");
+    console.log(`\nCells are avg Δ (n) per complexity. Read WITHIN a row; '-' = no ratings at that size.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
+
+  if (opts.weighted) {
+    const scored = weightedRows(aggregateWeighted(rows, depth, config), minN);
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    console.log(pad("model · tier", 34) + pad("wΔ", 8) + pad("n", 4) + pad("effort mix", 22) + pad("age", 15) + "by complexity" + depthNote);
+    console.log("-".repeat(96));
+    for (const r of scored) {
+      const eff = Object.entries(r.eff).map(([e, n]) => `${e}:${n}`).join(" ");
+      const comp = Object.entries(r.comp).map(([c, n]) => `${c}:${n}`).join(" ");
+      const ageStr = r.ageMonths == null ? "-" : `${r.ageMonths}mo ${r.ageTier}`;
+      const flag = r.lowConfidence ? "  ⚠ low-n" : "";
+      console.log(pad(r.key, 34) + pad(signed(r.weightedAvg), 8) + pad(r.n, 4) + pad(eff, 22) + pad(ageStr, 15) + comp + flag);
+    }
+    if (!scored.length) console.log("(no rows yet)");
+    console.log(`\nwΔ = effort-weighted avg Δ: each rating weighted by its effort rank (higher effort counts more).`);
+    console.log(`Efforts are folded into one model·tier bucket here (not split by @effort). ⚠ low-n < ${minN} ratings.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
+
   const scored = scorecardRows(aggregate(rows, depth), minN);
 
   if (opts.csv) {
     console.log(scorecardCsv(scored));
     return;
   }
-  const pad = (s, n) => String(s).padEnd(n);
   const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
   console.log(pad("model@effort · tier", 40) + pad("avg Δ", 8) + pad("n", 4) + pad("age", 15) + "by complexity" + depthNote);
   console.log("-".repeat(82));
@@ -180,7 +230,7 @@ const HELP = `model-scorecard — rate subagent models vs. expectation, per (mod
 
   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \\
                         [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
-  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv]
+  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked]
   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since D] [--until D]
   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \\
                         [--effort-default e] [--default-depth N] [--min-n k] [--reset]
@@ -188,10 +238,12 @@ const HELP = `model-scorecard — rate subagent models vs. expectation, per (mod
 Δ: -2 well below .. +2 well above expectation; 0 = met (correctly tiered, not mediocre).
 Model names are free-form AND hierarchical — "5.6 sol"/"5.6 terra" roll up under
 "5.6" at a shallower --depth. --depth 0 (default) = full name (most specific).
---cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01) gives the
-model a knowledge-cutoff date; show/compare derive age (fresh/recent/aging/stale)
-from it against today — all local, no provider API. Effort default/floor/max are
-set with \`config\`, not baked in.`;
+show --weighted folds effort variants into one model·tier bucket, weighting Δ by
+effort rank; show --stacked is a model × complexity (S/M/L) grid.
+--cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01, or the
+bundled scripts/cutoffs.json seed) gives the model a knowledge-cutoff date;
+show/compare derive age (fresh/recent/aging/stale) from it against today — all
+local, no provider API. Effort default/floor/max are set with \`config\`, not baked in.`;
 
 switch (sub) {
   case "log": cmdLog(rest); break;

@@ -15,7 +15,7 @@ This ships the scripts with the plugin; commands resolve via `${CLAUDE_PLUGIN_RO
 
 ## Slash commands (Claude Code)
 - `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-2..2> [--cutoff <YYYY-MM>] --note "<expected vs got>"` — append one rating.
-- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv]` — per (model × tier) average Δ, n, model age, complexity mix.
+- `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked]` — per (model × tier) average Δ, n, model age, complexity mix. `--weighted` = effort-weighted rollup; `--stacked` = model × complexity grid.
 - `/score-compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since <date>] [--until <date>]` — models side by side per tier (or per complexity / per age); `--global` adds a coarse overall (mixes task types, use with care).
 - `/score-config [--effort-scale a,b,c] [--effort-floor <e>] [--effort-max <e>] [--effort-default <e>] [--default-depth <N>] [--min-n <k>] [--reset]` — view/change plugin config.
 
@@ -61,6 +61,8 @@ Two ways the date is supplied (explicit wins):
 - **`--cutoff YYYY-MM`** (or `YYYY-MM-DD`) on `log`. Malformed values are rejected with no write, like `--delta`/`--effort`.
 - **Auto-detected from the model name** — a date-shaped part is parsed automatically: `gpt-5.6-2026-01` → `2026-01`, `claude-sonnet-20241022` → `2024-10-22`. Zero extra typing when the date already lives in the name.
 
+If neither is present, a bundled, user-editable seed (`scripts/cutoffs.json`) is consulted as a last resort — matched by exact model name then hierarchical prefix (longest first), so a `gpt-5.6` entry answers for `gpt-5.6-sol`. Precedence is **`--cutoff` > name-parsed > seed**. The shipped seed values are illustrative starting points; verify/edit them against provider model cards.
+
 `show` then adds an **age** column (months since the cutoff), tiered:
 
 | tier | age |
@@ -84,6 +86,11 @@ Global config at `~/.claude/scorecard/config.json` (same directory as the data �
 ## Δ scale (vs. what you expected of that model for that task)
 -2 well below · -1 below · 0 met · +1 above · +2 well above. `0 = correctly tiered, not mediocre`. Bucket avg ~0 = correctly tiered; + = beats its tier; − = underperforms. Read WITHIN a bucket only. Buckets with fewer than `--min-n` ratings (default 3) are flagged `⚠ low-n` — indicative only.
 
+## Views
+Beyond the default per-(model × tier) table, `show` offers two rollups (mutually exclusive):
+- **`--weighted`** — folds the `@effort` variants of a model back into one `model · tier` bucket and reports an **effort-weighted** avg Δ: each rating is weighted by its effort rank (`minimal`=1 … `high`=4 on the default scale; off-scale/empty efforts weigh 1). Use it to ask "which model is best overall, crediting wins earned at higher effort", instead of reading each effort bucket separately.
+- **`--stacked`** — a grid crossing each bucket (row) with complexity S/M/L (columns) plus an `all` total, so you can read a family's standing across task sizes at a glance. Combine with `--depth` to stack whole families.
+
 ## Data
 Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — persists across every project and platform). Malformed lines are skipped, not fatal; a missing file is reported gracefully.
 
@@ -91,7 +98,7 @@ Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — per
 ```
 npm test        # or: node --test
 ```
-Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 51 tests cover delta validation, effort/config resolution, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, age tiers), aggregation, compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
+Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 60 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup and stacked grid), compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
 
 ## Status
-v0.4.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, model age from knowledge cutoffs, customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.5.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, effort-weighted + stacked-complexity views, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.

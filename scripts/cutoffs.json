@@ -1,0 +1,9 @@
+{
+  "_note": "User-editable seed of knowledge-cutoff dates (YYYY-MM), used only when a rating supplies neither --cutoff nor a date-shaped model name. Keys are matched exactly, then by hierarchical prefix (longest first), so 'gpt-5.6' answers for 'gpt-5.6-sol'. Verify/adjust against each provider's model card before trusting; these are illustrative starting values, not authoritative.",
+  "gpt-4o": "2023-10",
+  "gpt-4-turbo": "2023-12",
+  "o1": "2023-10",
+  "claude-3-opus": "2023-08",
+  "claude-3-5-sonnet": "2024-04",
+  "gemini-1.5-pro": "2023-11"
+}

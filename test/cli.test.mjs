@@ -208,3 +208,35 @@ test("compare --by-age: rows are age tiers", () => {
     assert.match(r.stdout, /^stale /m);
   });
 });
+
+test("show --weighted: folds efforts into model·tier with effort-weighted Δ", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "opus", "--effort", "high", "--tier", "t", "--delta", "2"], env);
+    run(["log", "--model", "opus", "--effort", "minimal", "--tier", "t", "--delta", "-2"], env);
+    const r = run(["show", "--weighted"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^wΔ = effort-weighted/m); // legend present
+    assert.match(r.stdout, /opus · t/);               // effort folded out of the key
+    assert.doesNotMatch(r.stdout, /opus@high/);        // not split by @effort here
+  });
+});
+
+test("show --stacked: model rows × complexity columns", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "opus", "--tier", "t", "--complexity", "L", "--delta", "2"], env);
+    run(["log", "--model", "opus", "--tier", "t", "--complexity", "S", "--delta", "0"], env);
+    const r = run(["show", "--stacked"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /model@effort · tier/);
+    assert.match(r.stdout, /\ball\b/);      // total column header
+    assert.match(r.stdout, /opus@medium · t/);
+  });
+});
+
+test("log: bundled seed supplies cutoff for a known model with no date", () => {
+  withTempHome((home, env) => {
+    const r = run(["log", "--model", "gpt-4o", "--tier", "t", "--delta", "0"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /"cutoff":"2023-10"/); // from scripts/cutoffs.json
+  });
+});

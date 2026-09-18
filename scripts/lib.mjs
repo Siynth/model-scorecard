@@ -86,6 +86,17 @@ export function resolveEffort(effort, config = DEFAULT_CONFIG) {
   return e;
 }
 
+// Weight of an effort for the effort-weighted view: its 1-based rank in the
+// ordered scale (minimal=1 .. high=4 by default), so a win earned at higher
+// effort counts for more. An empty or free-form (off-scale) effort weighs 1.
+export function effortWeight(effort, config = DEFAULT_CONFIG) {
+  const scale = Array.isArray(config.effortScale) ? config.effortScale : [];
+  const e = effort ? String(effort).trim() : "";
+  if (!e || !scale.length) return 1;
+  const idx = scale.indexOf(e);
+  return idx === -1 ? 1 : idx + 1;
+}
+
 // --- model hierarchy --------------------------------------------------------
 // Model names are hierarchical: split on whitespace / - / _ / : / (dots kept, so
 // "5.6" stays one segment). "5.6 sol", "gpt-5.6-sol", "claude/opus-4.8" all
@@ -180,11 +191,41 @@ export function parseNameDate(model) {
   return "";
 }
 
-// Resolve the cutoff to store for one rating: a validated explicit --cutoff wins,
-// otherwise fall back to whatever the model name reveals (or "").
-export function resolveCutoff(explicit, model) {
+// Validate a cutoff but never throw — used for values from a trusted-ish seed
+// file where one bad entry shouldn't abort a log.
+function safeCutoff(v) {
+  try {
+    return normalizeCutoff(v);
+  } catch {
+    return "";
+  }
+}
+
+// Look a model up in a seed map of known cutoffs. Tries the exact name, then
+// progressively shorter hierarchical prefixes (longest first), so a seed keyed
+// "gpt-5.6" answers for "gpt-5.6-sol". Returns "" when nothing matches.
+export function lookupSeedCutoff(model, seed = {}) {
+  if (!seed || typeof seed !== "object") return "";
+  const s = String(model == null ? "" : model).trim();
+  if (!s) return "";
+  if (seed[s]) return safeCutoff(seed[s]);
+  const parts = modelParts(s);
+  for (let d = parts.length - 1; d >= 1; d--) {
+    const key = modelAtDepth(s, d);
+    if (seed[key]) return safeCutoff(seed[key]);
+  }
+  return "";
+}
+
+// Resolve the cutoff to store for one rating. Precedence: a validated explicit
+// --cutoff wins, else a date parsed from the model name, else a bundled/seed
+// lookup, else "".
+export function resolveCutoff(explicit, model, seed = {}) {
   const e = normalizeCutoff(explicit); // throws on a malformed explicit value
-  return e || parseNameDate(model);
+  if (e) return e;
+  const named = parseNameDate(model);
+  if (named) return named;
+  return lookupSeedCutoff(model, seed);
 }
 
 // Whole months between a cutoff and `now` (month precision; the day component is
@@ -244,7 +285,7 @@ export function validateDelta(v) {
 
 // Builds a validated row from parsed opts. Requires model, tier, delta. Effort
 // is resolved/validated against config (default applied, floor/max enforced).
-export function buildRow(o, config = DEFAULT_CONFIG, now = new Date()) {
+export function buildRow(o, config = DEFAULT_CONFIG, now = new Date(), seed = {}) {
   for (const k of ["model", "tier", "delta"]) {
     if (o[k] == null) throw new Error(`missing --${k}`);
   }
@@ -256,7 +297,7 @@ export function buildRow(o, config = DEFAULT_CONFIG, now = new Date()) {
     task: o.task || "",
     complexity: o.complexity || "",
     delta: validateDelta(o.delta),
-    cutoff: resolveCutoff(o.cutoff, o.model),
+    cutoff: resolveCutoff(o.cutoff, o.model, seed),
     note: o.note || "",
   };
 }
@@ -340,6 +381,77 @@ export function scorecardRows(buckets, minN = MIN_N, now = new Date()) {
       };
     })
     .sort((a, b) => b.avg - a.avg);
+}
+
+// --- effort-weighted view ---------------------------------------------------
+// Folds the @effort dimension back into a single model·tier bucket, weighting
+// each rating's Δ by its effort rank (higher effort counts more). Answers "which
+// model is best overall, giving more credit to wins earned at higher effort".
+export function aggregateWeighted(rows, depth = 0, config = DEFAULT_CONFIG) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const model = modelAtDepth(r.model, depth);
+    const key = `${model} · ${r.tier || "?"}`; // effort folded in via weight, not the key
+    const b = buckets.get(key) || { wsum: 0, wtot: 0, n: 0, comp: {}, eff: {}, cutoff: "" };
+    const w = effortWeight(r.effort, config);
+    b.wsum += w * r.delta;
+    b.wtot += w;
+    b.n += 1;
+    if (r.complexity) b.comp[r.complexity] = (b.comp[r.complexity] || 0) + 1;
+    if (r.effort) b.eff[r.effort] = (b.eff[r.effort] || 0) + 1;
+    if (r.cutoff && r.cutoff > b.cutoff) b.cutoff = r.cutoff;
+    buckets.set(key, b);
+  }
+  return buckets;
+}
+
+// Sorted rows for the weighted view, highest weighted avg first.
+export function weightedRows(buckets, minN = MIN_N, now = new Date()) {
+  return [...buckets.entries()]
+    .map(([k, b]) => {
+      const age = ageMonths(b.cutoff, now);
+      return {
+        key: k,
+        weightedAvg: b.wtot ? b.wsum / b.wtot : 0,
+        n: b.n,
+        eff: b.eff,
+        comp: b.comp,
+        lowConfidence: b.n < minN,
+        cutoff: b.cutoff || "",
+        ageMonths: age,
+        ageTier: ageTier(age),
+      };
+    })
+    .sort((a, b) => b.weightedAvg - a.weightedAvg);
+}
+
+// --- stacked depth × complexity report --------------------------------------
+// One grid: each bucket (model@effort · tier, at `depth`) as a row, complexity
+// classes (S/M/L) as columns, plus an "all" total. Reads a family's standing
+// across task sizes at a glance.
+export function stackedData(rows, depth = 0) {
+  const buckets = new Map();
+  const comps = new Set();
+  for (const r of rows) {
+    const key = bucketKey(r, depth);
+    const comp = r.complexity || "?";
+    comps.add(comp);
+    const b = buckets.get(key) || { byComp: {}, total: { sum: 0, n: 0 } };
+    b.byComp[comp] = b.byComp[comp] || { sum: 0, n: 0 };
+    b.byComp[comp].sum += r.delta;
+    b.byComp[comp].n += 1;
+    b.total.sum += r.delta;
+    b.total.n += 1;
+    buckets.set(key, b);
+  }
+  // Order columns S, M, L first (if present), then any others, then "?" last.
+  const preferred = ["S", "M", "L"];
+  const rest = [...comps].filter((c) => !preferred.includes(c) && c !== "?").sort();
+  const cols = [...preferred.filter((c) => comps.has(c)), ...rest, ...(comps.has("?") ? ["?"] : [])];
+  const rowsOut = [...buckets.entries()]
+    .map(([key, b]) => ({ key, byComp: b.byComp, total: b.total }))
+    .sort((a, b) => b.total.sum / b.total.n - a.total.sum / a.total.n);
+  return { rows: rowsOut, cols };
 }
 
 // --- compare ----------------------------------------------------------------
