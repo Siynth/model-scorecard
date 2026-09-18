@@ -177,7 +177,7 @@ function cmdCompare(argv) {
     console.log(pad(g, 26) + models.map((m) => pad(avgLabel(data[m]?.groups[g]), 16)).join(""));
   }
   if (!groups.length) console.log("(no data for these models yet)");
-  console.log(`\nCompare WITHIN a ${axis} (same row). '-' = no data for that model/${axis}.`);
+  console.log(`\nCompare WITHIN the same ${axis} (row). '-' = no data for that model/${axis}.`);
   if (depth) console.log(`Models matched at hierarchy depth ${depth}.`);
   if (opts.global) {
     console.log("\n-- GLOBAL (mixes task types; coarse, use with care) --");
