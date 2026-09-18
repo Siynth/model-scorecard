@@ -1,6 +1,6 @@
 {
   "name": "model-scorecard",
-  "owner": { "name": "Allen" },
+  "owner": { "name": "Siynth" },
   "metadata": {
     "description": "Rate subagent models vs. expectation, per (model x tier).",
     "version": "0.8.0"

@@ -3,6 +3,7 @@
   "version": "0.8.0",
   "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores. Zero dependencies, portable pure-Node core.",
   "type": "module",
+  "author": "Siynth",
   "keywords": ["scorecard", "llm", "subagent", "rating", "cli", "claude-code", "plugin"],
   "homepage": "https://github.com/Siynth/model-scorecard#readme",
   "repository": { "type": "git", "url": "https://github.com/Siynth/model-scorecard.git" },
