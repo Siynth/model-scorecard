@@ -2,6 +2,17 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.5.1] — 2026-09-18
+
+### Changed
+- Cleanup pass for public release: trimmed verbose code comments in
+  `scripts/lib.mjs` and `scripts/scorecard.mjs` (behavior unchanged), fixed an
+  a/an grammar slip in the `compare` footer, and added `repository` / `homepage`
+  / `bugs` / `keywords` metadata to `package.json`.
+
+### Added
+- `LICENSE` file (MIT).
+
 ## [0.5.0] — 2026-09-18
 
 ### Added

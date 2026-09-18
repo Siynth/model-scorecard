@@ -1,21 +1,11 @@
 #!/usr/bin/env node
-// scorecard.mjs — single, platform-agnostic CLI for the model scorecard.
-// Works anywhere `node` runs (Claude Code, Codex, OpenCode, plain shell, MCP).
-// Data + config are global at ~/.claude/scorecard/ so ratings and preferences
-// persist across every project and every platform.
+// scorecard.mjs — platform-agnostic CLI for the model scorecard. Runs anywhere
+// `node` does (Claude Code, Codex, OpenCode, plain shell, MCP). Data + config
+// are global at ~/.claude/scorecard/ so they persist across projects/platforms.
+// Subcommands: log | show | compare | config | help. See HELP below for usage.
 //
-//   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \
-//                         [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
-//   scorecard.mjs show    [--since D] [--until D] [--depth N] [--min-n k] [--csv] [--weighted] [--stacked]
-//   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] \
-//                         [--depth N] [--since D] [--until D]
-//   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \
-//                         [--effort-default e] [--default-depth N] [--min-n k] [--reset]
-//
-// Model names are FREE-FORM and HIERARCHICAL: a new model is "defined" simply by
-// logging a rating with its name (no enum, no registry), and its name decomposes
-// into ordered segments so "5.6 sol"/"5.6 terra" can roll up under "5.6" at a
-// shallower --depth. Ranking is always per-(model x tier); --global is a caveated
+// Model names are free-form and hierarchical (no registry — a model is "defined"
+// by logging it). Ranking is always per-(model x tier); --global is a caveated
 // coarse extra, never the headline.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -51,8 +41,8 @@ function writeConfig(cfg) {
   writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
 }
 
-// Bundled seed of known knowledge cutoffs, shipped next to this script. Used only
-// as a last resort when a rating gives neither --cutoff nor a dated model name.
+// Bundled seed of known cutoffs, shipped next to this script; a last resort when
+// a rating gives neither --cutoff nor a dated model name.
 function readSeed() {
   try {
     return JSON.parse(readFileSync(new URL("./cutoffs.json", import.meta.url), "utf8"));

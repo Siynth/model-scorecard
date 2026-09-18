@@ -1,13 +1,17 @@
 {
   "name": "model-scorecard",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Rate subagent models vs. expectation per task; per-(model x tier) scores. Zero dependencies, portable pure-Node core.",
   "type": "module",
+  "keywords": ["scorecard", "llm", "subagent", "rating", "cli", "claude-code", "plugin"],
+  "homepage": "https://github.com/Siynth/model-scorecard#readme",
+  "repository": { "type": "git", "url": "https://github.com/Siynth/model-scorecard.git" },
+  "bugs": { "url": "https://github.com/Siynth/model-scorecard/issues" },
   "bin": { "scorecard": "./scripts/scorecard.mjs" },
   "scripts": {
     "test": "node --test"
   },
   "license": "MIT",
   "engines": { "node": ">=18" },
-  "files": ["scripts/", "commands/", ".claude-plugin/", "README.md", "CHANGELOG.md"]
+  "files": ["scripts/", "commands/", ".claude-plugin/", "README.md", "CHANGELOG.md", "LICENSE"]
 }

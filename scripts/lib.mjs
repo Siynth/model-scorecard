@@ -1,11 +1,10 @@
-// lib.mjs — pure logic for model-scorecard. No file IO here so it is unit-testable.
-// The CLI (scripts/scorecard.mjs) does the IO and calls these.
+// Pure logic for model-scorecard — no file IO, so it stays unit-testable.
+// The CLI (scorecard.mjs) does the IO and calls into here.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// Global data path — deliberately NOT plugin-local, so ratings persist across every project.
+// Global paths — deliberately not plugin-local, so ratings + config persist across projects.
 export const DATA_FILE = join(homedir(), ".claude", "scorecard", "model_scorecard.jsonl");
-// Plugin config lives next to the data (also global, also cross-project/platform).
 export const CONFIG_FILE = join(homedir(), ".claude", "scorecard", "config.json");
 
 // Buckets with fewer than this many ratings are flagged low-confidence.
@@ -14,21 +13,20 @@ export const MIN_N = 3;
 const DELTAS = new Set([-2, -1, 0, 1, 2]);
 
 // --- config -----------------------------------------------------------------
-// Plugin-level (not interface-level) defaults the user can customize. The effort
-// scale is ORDERED low->high; floor/max bound what efforts are loggable, default
-// is what `log` uses when --effort is omitted.
+// Plugin-level defaults (customizable via `config`). effortScale is ordered
+// low→high; floor/max bound loggable efforts; effortDefault applies when
+// --effort is omitted.
 export const DEFAULT_CONFIG = {
   effortScale: ["minimal", "low", "medium", "high"],
   effortFloor: "minimal",
   effortMax: "high",
   effortDefault: "medium",
-  defaultDepth: 0, // 0 = full model name (most specific); N = group at N segments
+  defaultDepth: 0, // 0 = full model name; N = group at N segments
   minN: MIN_N,
 };
 
-// Sanitizes any raw config object into a coherent one: scale is a clean string
-// array; floor/max/default fall back into the scale and stay ordered; a cleared
-// scale (`[]`) means free-form efforts (no validation). Never throws.
+// Coerce a raw config into a coherent one; an empty scale means free-form
+// efforts. Never throws.
 export function normalizeConfig(raw = {}) {
   const c = { ...DEFAULT_CONFIG, ...(raw || {}) };
   c.effortScale = Array.isArray(c.effortScale)
@@ -49,7 +47,6 @@ export function normalizeConfig(raw = {}) {
     di = Math.min(Math.max(di, lo), hi);
     c.effortDefault = scale[di];
   } else {
-    // Free-form efforts: keep whatever strings were given (or empty).
     c.effortFloor = null;
     c.effortMax = null;
     c.effortDefault = typeof c.effortDefault === "string" ? c.effortDefault : "";
@@ -60,9 +57,8 @@ export function normalizeConfig(raw = {}) {
   return c;
 }
 
-// Resolves the effort to store for one log call. Applies the configured default
-// when none is given; validates against the scale and floor/max when a scale is
-// set. Throws (so no row is written) on an unknown or out-of-range effort.
+// Effort to store for one log: apply the default when omitted, validate against
+// the scale + floor/max. Throws (so no row is written) on an invalid effort.
 export function resolveEffort(effort, config = DEFAULT_CONFIG) {
   const scale = Array.isArray(config.effortScale) ? config.effortScale : [];
   const raw = effort != null && String(effort).trim() !== "" ? String(effort).trim() : "";
@@ -86,9 +82,7 @@ export function resolveEffort(effort, config = DEFAULT_CONFIG) {
   return e;
 }
 
-// Weight of an effort for the effort-weighted view: its 1-based rank in the
-// ordered scale (minimal=1 .. high=4 by default), so a win earned at higher
-// effort counts for more. An empty or free-form (off-scale) effort weighs 1.
+// Effort's 1-based rank in the scale (minimal=1 .. high=4); empty/off-scale weighs 1.
 export function effortWeight(effort, config = DEFAULT_CONFIG) {
   const scale = Array.isArray(config.effortScale) ? config.effortScale : [];
   const e = effort ? String(effort).trim() : "";
@@ -98,14 +92,12 @@ export function effortWeight(effort, config = DEFAULT_CONFIG) {
 }
 
 // --- model hierarchy --------------------------------------------------------
-// Model names are hierarchical: split on whitespace / - / _ / : / (dots kept, so
-// "5.6" stays one segment). "5.6 sol", "gpt-5.6-sol", "claude/opus-4.8" all
-// decompose into ordered segments. Depth truncates the name to make a rating
-// more GENERAL (fewer segments) or SPECIFIC (more).
+// Names split on space / - / _ / : / (dots kept, so "5.6" stays one segment).
+// Depth truncates a name to read a rating more general or more specific.
 const SEG_DELIM = /[\s\-_/:]+/g;
 
-// Returns [{seg, sep}] preserving the delimiter that followed each segment so a
-// truncated name reads with its ORIGINAL punctuation (e.g. "gpt-5.6").
+// Segments plus the delimiter that followed each, so a truncated name keeps its
+// original punctuation (e.g. "gpt-5.6").
 export function modelParts(model) {
   const s = String(model == null ? "" : model).trim();
   if (!s) return [];
@@ -121,13 +113,13 @@ export function modelParts(model) {
   return parts.filter((p) => p.seg);
 }
 
-// Ordered segments only (no delimiters).
+// Ordered segments only, no delimiters.
 export function modelSegments(model) {
   return modelParts(model).map((p) => p.seg);
 }
 
-// Model name truncated to `depth` segments (0/undefined/>=len -> full name),
-// reconstructed with its original delimiters.
+// Name truncated to `depth` segments (0 / >= len → full name), rebuilt with its
+// original delimiters.
 export function modelAtDepth(model, depth = 0) {
   const parts = modelParts(model);
   const full = () => parts.map((p, i) => p.seg + (i < parts.length - 1 ? p.sep : "")).join("");
@@ -137,18 +129,12 @@ export function modelAtDepth(model, depth = 0) {
 }
 
 // --- model age / knowledge cutoff -------------------------------------------
-// A model's "age" is derived from a knowledge-cutoff/date, stored per rating as
-// YYYY-MM (month precision) or YYYY-MM-DD. It can be given explicitly with
-// --cutoff, or auto-detected from a date-shaped part of the model name (e.g.
-// "gpt-5.6-2026-01" -> "2026-01", "claude-sonnet-20241022" -> "2024-10-22").
-// Explicit --cutoff wins over the name-parsed one. There is NO provider API for
-// knowledge cutoffs (they are published as prose, not data), so age math is
-// entirely local and computed at report time against the current date.
+// Age comes from a per-rating cutoff (YYYY-MM or YYYY-MM-DD), computed locally at
+// report time. No provider API exists for knowledge cutoffs, so nothing is fetched.
 const CUTOFF_RE = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/;
 
-// Validate/normalize an explicit --cutoff. Accepts YYYY-MM or YYYY-MM-DD and
-// throws on anything malformed so NO row is written — consistent with the strict
-// --delta / --effort validation (never silently coerce).
+// Validate/normalize an explicit --cutoff; throw on malformed input so no row is
+// written (matching the strict --delta / --effort handling).
 export function normalizeCutoff(v) {
   const s = String(v == null ? "" : v).trim();
   if (!s) return "";
@@ -164,10 +150,9 @@ export function normalizeCutoff(v) {
   return `${m[1]}-${m[2]}`;
 }
 
-// Best-effort date detection inside a free-form model name. Lenient: returns ""
-// (not a throw) when nothing date-shaped is present. Recognizes a hyphenated
-// YYYY-MM(-DD) or a compact 8-digit YYYYMMDD (20xx years only, to avoid matching
-// version numbers). Validates month/day ranges so "1234-56" or "v99" don't match.
+// Detect a date inside a model name — hyphenated YYYY-MM(-DD) or compact
+// YYYYMMDD (20xx only, to skip version numbers). Lenient: "" when none, with
+// month/day ranges checked so "1234-56" doesn't match.
 export function parseNameDate(model) {
   const s = String(model == null ? "" : model);
   let m = /(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(s);
@@ -191,8 +176,7 @@ export function parseNameDate(model) {
   return "";
 }
 
-// Validate a cutoff but never throw — used for values from a trusted-ish seed
-// file where one bad entry shouldn't abort a log.
+// normalizeCutoff that swallows errors — a bad seed entry shouldn't abort a log.
 function safeCutoff(v) {
   try {
     return normalizeCutoff(v);
@@ -201,9 +185,8 @@ function safeCutoff(v) {
   }
 }
 
-// Look a model up in a seed map of known cutoffs. Tries the exact name, then
-// progressively shorter hierarchical prefixes (longest first), so a seed keyed
-// "gpt-5.6" answers for "gpt-5.6-sol". Returns "" when nothing matches.
+// Seed lookup by exact name, then hierarchical prefix (longest first), so a
+// "gpt-5.6" entry answers for "gpt-5.6-sol". "" when nothing matches.
 export function lookupSeedCutoff(model, seed = {}) {
   if (!seed || typeof seed !== "object") return "";
   const s = String(model == null ? "" : model).trim();
@@ -217,9 +200,7 @@ export function lookupSeedCutoff(model, seed = {}) {
   return "";
 }
 
-// Resolve the cutoff to store for one rating. Precedence: a validated explicit
-// --cutoff wins, else a date parsed from the model name, else a bundled/seed
-// lookup, else "".
+// Cutoff precedence: explicit --cutoff > date in the name > seed > "".
 export function resolveCutoff(explicit, model, seed = {}) {
   const e = normalizeCutoff(explicit); // throws on a malformed explicit value
   if (e) return e;
@@ -228,20 +209,16 @@ export function resolveCutoff(explicit, model, seed = {}) {
   return lookupSeedCutoff(model, seed);
 }
 
-// Whole months between a cutoff and `now` (month precision; the day component is
-// ignored for the difference). Returns null when there is no cutoff, and clamps
-// a future cutoff to 0.
+// Whole months from cutoff to `now` (month precision); null if no cutoff, 0 if future.
 export function ageMonths(cutoff, now = new Date()) {
   if (!cutoff) return null;
   const m = CUTOFF_RE.exec(cutoff);
   if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const months = (now.getUTCFullYear() - y) * 12 + (now.getUTCMonth() + 1 - mo);
+  const months = (now.getUTCFullYear() - Number(m[1])) * 12 + (now.getUTCMonth() + 1 - Number(m[2]));
   return months < 0 ? 0 : months;
 }
 
-// Coarse age tier from a month count. "" when age is unknown.
+// Coarse age bucket; "" when unknown.
 export function ageTier(months) {
   if (months == null) return "";
   if (months < 3) return "fresh";
@@ -251,8 +228,7 @@ export function ageTier(months) {
 }
 
 // --- argument parsing -------------------------------------------------------
-// Parses `--key value` pairs and bare positionals. Flags named in booleanFlags
-// consume no value (e.g. --global, --csv, --by-complexity).
+// Parse `--key value` pairs and bare positionals; booleanFlags consume no value.
 export function parseArgs(argv, booleanFlags = []) {
   const opts = {};
   const positional = [];
@@ -270,21 +246,16 @@ export function parseArgs(argv, booleanFlags = []) {
 }
 
 // --- logging ----------------------------------------------------------------
-// Δ must be an integer in -2..2. Throws on anything else (no write happens).
+// Δ must be an integer in -2..2; throws otherwise (no write). Note: Number("")
+// and Number(" ") coerce to 0, so blank input is guarded explicitly.
 export function validateDelta(v) {
-  // Guard blank/whitespace: Number("") and Number(" ") both coerce to 0.
-  if (v == null || String(v).trim() === "") {
-    throw new Error("--delta must be an integer in -2..2");
-  }
+  if (v == null || String(v).trim() === "") throw new Error("--delta must be an integer in -2..2");
   const d = Number(v);
-  if (!Number.isInteger(d) || !DELTAS.has(d)) {
-    throw new Error("--delta must be an integer in -2..2");
-  }
+  if (!Number.isInteger(d) || !DELTAS.has(d)) throw new Error("--delta must be an integer in -2..2");
   return d;
 }
 
-// Builds a validated row from parsed opts. Requires model, tier, delta. Effort
-// is resolved/validated against config (default applied, floor/max enforced).
+// Validated row from parsed opts; requires model/tier/delta, resolves effort + cutoff.
 export function buildRow(o, config = DEFAULT_CONFIG, now = new Date(), seed = {}) {
   for (const k of ["model", "tier", "delta"]) {
     if (o[k] == null) throw new Error(`missing --${k}`);
@@ -303,8 +274,8 @@ export function buildRow(o, config = DEFAULT_CONFIG, now = new Date(), seed = {}
 }
 
 // --- reading ----------------------------------------------------------------
-// Tolerant JSONL parse: skips blank lines, unparseable JSON, and rows whose
-// delta is not a finite number. Returns kept rows + 1-based bad line numbers.
+// Tolerant JSONL parse: skip blank / unparseable / non-numeric-delta lines.
+// Returns kept rows plus 1-based bad line numbers.
 export function parseLines(text) {
   const rows = [];
   const bad = [];
@@ -328,7 +299,7 @@ export function parseLines(text) {
   return { rows, bad };
 }
 
-// Inclusive date filter. Dates are ISO YYYY-MM-DD, so string compare is correct.
+// Inclusive since/until filter (ISO dates compare lexically).
 export function filterByDate(rows, { since, until } = {}) {
   if (!since && !until) return rows;
   return rows.filter((r) => {
@@ -340,13 +311,14 @@ export function filterByDate(rows, { since, until } = {}) {
 }
 
 // --- aggregation ------------------------------------------------------------
-// Bucket key at a given hierarchy depth (0 = full model name).
+// Bucket key at a hierarchy depth (0 = full model name).
 export function bucketKey(r, depth = 0) {
   const model = modelAtDepth(r.model, depth);
   return `${model}${r.effort ? "@" + r.effort : ""} · ${r.tier || "?"}`;
 }
 
-// model@effort · tier -> { sum, n, comp: {S,M,L counts} }, grouped at `depth`.
+// model@effort · tier → { sum, n, comp, cutoff }, grouped at `depth`. Keeps the
+// latest cutoff seen (lexical compare works for both cutoff forms).
 export function aggregate(rows, depth = 0) {
   const buckets = new Map();
   for (const r of rows) {
@@ -355,16 +327,13 @@ export function aggregate(rows, depth = 0) {
     b.sum += r.delta;
     b.n += 1;
     if (r.complexity) b.comp[r.complexity] = (b.comp[r.complexity] || 0) + 1;
-    // Keep the latest cutoff seen in the bucket (lexical compare works for the
-    // YYYY-MM / YYYY-MM-DD forms), so age reflects the freshest rating logged.
     if (r.cutoff && r.cutoff > b.cutoff) b.cutoff = r.cutoff;
     buckets.set(key, b);
   }
   return buckets;
 }
 
-// Sorted rows for rendering, highest avg first. minN flags thin buckets. Age is
-// derived from each bucket's cutoff against `now` at report time.
+// Render rows sorted by avg desc; flags thin buckets, derives age at report time.
 export function scorecardRows(buckets, minN = MIN_N, now = new Date()) {
   return [...buckets.entries()]
     .map(([k, b]) => {
@@ -384,9 +353,9 @@ export function scorecardRows(buckets, minN = MIN_N, now = new Date()) {
 }
 
 // --- effort-weighted view ---------------------------------------------------
-// Folds the @effort dimension back into a single model·tier bucket, weighting
-// each rating's Δ by its effort rank (higher effort counts more). Answers "which
-// model is best overall, giving more credit to wins earned at higher effort".
+// Fold @effort back into one model·tier bucket, weighting each Δ by effort rank
+// (higher effort counts more). Answers "which model is best overall, crediting
+// wins earned at higher effort".
 export function aggregateWeighted(rows, depth = 0, config = DEFAULT_CONFIG) {
   const buckets = new Map();
   for (const r of rows) {
@@ -405,7 +374,7 @@ export function aggregateWeighted(rows, depth = 0, config = DEFAULT_CONFIG) {
   return buckets;
 }
 
-// Sorted rows for the weighted view, highest weighted avg first.
+// Weighted rows sorted by weighted avg desc.
 export function weightedRows(buckets, minN = MIN_N, now = new Date()) {
   return [...buckets.entries()]
     .map(([k, b]) => {
@@ -426,9 +395,8 @@ export function weightedRows(buckets, minN = MIN_N, now = new Date()) {
 }
 
 // --- stacked depth × complexity report --------------------------------------
-// One grid: each bucket (model@effort · tier, at `depth`) as a row, complexity
-// classes (S/M/L) as columns, plus an "all" total. Reads a family's standing
-// across task sizes at a glance.
+// Grid: each bucket (model@effort · tier, at `depth`) a row, complexity S/M/L
+// columns, plus an "all" total.
 export function stackedData(rows, depth = 0) {
   const buckets = new Map();
   const comps = new Set();
@@ -444,7 +412,7 @@ export function stackedData(rows, depth = 0) {
     b.total.n += 1;
     buckets.set(key, b);
   }
-  // Order columns S, M, L first (if present), then any others, then "?" last.
+  // Columns: S, M, L first (when present), then any others, then "?" last.
   const preferred = ["S", "M", "L"];
   const rest = [...comps].filter((c) => !preferred.includes(c) && c !== "?").sort();
   const cols = [...preferred.filter((c) => comps.has(c)), ...rest, ...(comps.has("?") ? ["?"] : [])];
@@ -455,10 +423,8 @@ export function stackedData(rows, depth = 0) {
 }
 
 // --- compare ----------------------------------------------------------------
-// model -> { groups: {label:{sum,n}}, all:{sum,n} }. Group axis is tier by
-// default, or complexity when groupBy="complexity", or age tier when
-// groupBy="age". Models are matched at `depth` so you can compare general
-// families (e.g. "5.6") or specific variants.
+// model → { groups: {label:{sum,n}}, all:{sum,n} }. Axis is tier (default),
+// complexity, or age; models are matched at `depth`.
 export function compareData(rows, models, { depth = 0, groupBy = "tier", now = new Date() } = {}) {
   const data = {};
   for (const r of rows) {
@@ -480,7 +446,7 @@ export function compareData(rows, models, { depth = 0, groupBy = "tier", now = n
   return data;
 }
 
-// Sorted union of group labels present across the requested models.
+// Sorted union of group labels across the requested models.
 export function groupsOf(data, models) {
   return [...new Set(models.flatMap((m) => Object.keys(data[m]?.groups || {})))].sort();
 }

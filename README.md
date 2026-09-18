@@ -101,4 +101,7 @@ npm test        # or: node --test
 Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 60 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup and stacked grid), compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
 
 ## Status
-v0.5.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, effort-weighted + stacked-complexity views, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.5.1. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, effort-weighted + stacked-complexity views, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+
+## License
+MIT — see [`LICENSE`](LICENSE).
