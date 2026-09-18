@@ -2,8 +2,7 @@
 // scorecard.mjs — platform-agnostic CLI for the model scorecard. Runs anywhere
 // `node` does (Claude Code, Codex, OpenCode, plain shell, MCP). Data + config
 // are global at ~/.claude/scorecard/ so they persist across projects/platforms.
-// Subcommands: log | show | compare | config | help. See HELP below for usage.
-//
+// Subcommands: log | show | compare | config | help. See HELP below for usage.//
 // Model names are free-form and hierarchical (no registry — a model is "defined"
 // by logging it). Ranking is always per-(model x tier); --global is a caveated
 // coarse extra, never the headline.
@@ -13,7 +12,7 @@ import {
   DATA_FILE, CONFIG_FILE, DEFAULT_CONFIG, normalizeConfig,
   parseArgs, buildRow, parseLines, filterByDate,
   aggregate, scorecardRows, compareData, groupsOf, avgLabel, signed, scorecardCsv,
-  aggregateWeighted, weightedRows, stackedData,
+  aggregateWeighted, weightedRows, stackedData, aggregateDecayed, decayedRows,
 } from "./lib.mjs";
 
 const [sub, ...rest] = process.argv.slice(2);
@@ -68,7 +67,7 @@ function cmdLog(argv) {
 
 // --- show -------------------------------------------------------------------
 function cmdShow(argv) {
-  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked"]);
+  const { opts } = parseArgs(argv, ["csv", "weighted", "stacked", "decayed"]);
   const config = readConfig();
   const minN = opts["min-n"] != null ? Number(opts["min-n"]) : config.minN;
   const depth = opts.depth != null ? Number(opts.depth) : config.defaultDepth;
@@ -79,6 +78,25 @@ function cmdShow(argv) {
   }
   const rows = filterByDate(parsed, { since: opts.since, until: opts.until });
   const pad = (s, n) => String(s).padEnd(n);
+
+  if (opts.decayed) {
+    const base = config.ageDecayPerYear;
+    const scored = decayedRows(aggregateDecayed(rows, depth, new Date(), base), minN);
+    const depthNote = depth ? `  (grouped at model depth ${depth})` : "";
+    console.log(pad("model@effort · tier", 40) + pad("dΔ", 8) + pad("raw", 8) + pad("n", 4) + pad("age", 15) + "by complexity" + depthNote);
+    console.log("-".repeat(90));
+    for (const r of scored) {
+      const comp = Object.entries(r.comp).map(([c, n]) => `${c}:${n}`).join(" ");
+      const ageStr = r.ageMonths == null ? "-" : `${r.ageMonths}mo ${r.ageTier}`;
+      const flag = r.lowConfidence ? "  ⚠ low-n" : "";
+      console.log(pad(r.key, 40) + pad(signed(r.decayedAvg), 8) + pad(signed(r.avg), 8) + pad(r.n, 4) + pad(ageStr, 15) + comp + flag);
+    }
+    if (!scored.length) console.log("(no rows yet)");
+    console.log(`\ndΔ = age-decayed avg Δ: each rating regressed toward 0 by ${base}^(age_years) — staleness = less trust, not a penalty.`);
+    console.log(`raw = undecayed avg Δ (unknown-age ratings are not decayed). ⚠ low-n < ${minN} ratings.`);
+    if (bad.length) console.error(`skipped ${bad.length} malformed line(s): ${bad.join(", ")}`);
+    return;
+  }
 
   if (opts.stacked) {
     const { rows: srows, cols } = stackedData(rows, depth);
@@ -183,6 +201,7 @@ const CONFIG_KEYS = {
   "effort-default": ["effortDefault", (v) => v],
   "default-depth": ["defaultDepth", (v) => Number(v)],
   "min-n": ["minN", (v) => Number(v)],
+  "age-decay": ["ageDecayPerYear", (v) => Number(v)],
 };
 
 function cmdConfig(argv) {
@@ -219,17 +238,20 @@ function cmdConfig(argv) {
 const HELP = `model-scorecard — rate subagent models vs. expectation, per (model x tier).
 
   scorecard.mjs log     --model <m> [--effort <e>] --tier <t> [--task "..."] \\
-                        [--complexity <S|M|L>] --delta <-2..2> [--cutoff <YYYY-MM>] [--note "..."]
-  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked]
+                        [--complexity <S|M|L>] --delta <-3..3> [--cutoff <YYYY-MM>] [--note "..."]
+  scorecard.mjs show    [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked] [--decayed]
   scorecard.mjs compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since D] [--until D]
   scorecard.mjs config  [--effort-scale a,b,c] [--effort-floor e] [--effort-max e] \\
-                        [--effort-default e] [--default-depth N] [--min-n k] [--reset]
+                        [--effort-default e] [--default-depth N] [--min-n k] [--age-decay f] [--reset]
 
-Δ: -2 well below .. +2 well above expectation; 0 = met (correctly tiered, not mediocre).
-Model names are free-form AND hierarchical — "5.6 sol"/"5.6 terra" roll up under
-"5.6" at a shallower --depth. --depth 0 (default) = full name (most specific).
+Δ: -3 far below .. 0 met (correctly tiered, not mediocre) .. +3 far above expectation.
+Model names are free-form AND hierarchical — log family-first ("opus 5", "sonnet
+5.1") so --depth 1 rolls a family's versions under "opus"/"sonnet". --depth 0
+(default) = full name (most specific).
 show --weighted folds effort variants into one model·tier bucket, weighting Δ by
-effort rank; show --stacked is a model × complexity (S/M/L) grid.
+effort rank; show --stacked is a model × complexity (S/M/L) grid; show --decayed
+regresses each Δ toward 0 by age (staleness = less trust, set rate with
+config --age-decay).
 --cutoff (or a date-shaped part of the model name, e.g. gpt-5.6-2026-01, or the
 bundled scripts/cutoffs.json seed) gives the model a knowledge-cutoff date;
 show/compare derive age (fresh/recent/aging/stale) from it against today — all

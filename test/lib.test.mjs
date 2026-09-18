@@ -8,6 +8,7 @@ import {
   modelParts, modelSegments, modelAtDepth, bucketKey,
   normalizeCutoff, parseNameDate, resolveCutoff, ageMonths, ageTier,
   effortWeight, lookupSeedCutoff, aggregateWeighted, weightedRows, stackedData,
+  ageDecayFactor, aggregateDecayed, decayedRows,
 } from "../scripts/lib.mjs";
 
 // --- parseArgs --------------------------------------------------------------
@@ -23,13 +24,13 @@ test("parseArgs: key/value pairs, boolean flags, positionals", () => {
 });
 
 // --- delta validation -------------------------------------------------------
-test("validateDelta: accepts integers in -2..2", () => {
-  for (const d of [-2, -1, 0, 1, 2]) assert.equal(validateDelta(String(d)), d);
+test("validateDelta: accepts integers in -3..3", () => {
+  for (const d of [-3, -2, -1, 0, 1, 2, 3]) assert.equal(validateDelta(String(d)), d);
 });
 
 test("validateDelta: rejects out-of-range and non-integers", () => {
-  for (const bad of ["3", "-3", "1.5", "abc", "", "NaN"]) {
-    assert.throws(() => validateDelta(bad), /-2\.\.2/);
+  for (const bad of ["4", "-4", "1.5", "abc", "", "NaN"]) {
+    assert.throws(() => validateDelta(bad), /-3\.\.3/);
   }
 });
 
@@ -48,7 +49,7 @@ test("buildRow: fills defaults and validates delta", () => {
   assert.equal(row.date, "2026-09-18");
   assert.equal(row.delta, 1);
   assert.equal(row.effort, DEFAULT_CONFIG.effortDefault); // default applied
-  assert.throws(() => buildRow({ model: "o", tier: "t", delta: "9" }), /-2\.\.2/);
+  assert.throws(() => buildRow({ model: "o", tier: "t", delta: "9" }), /-3\.\.3/);
 });
 
 // --- config -----------------------------------------------------------------
@@ -271,6 +272,31 @@ test("stackedData: model rows × complexity cols with totals, S/M/L ordered", ()
   assert.equal(r.byComp.L.n, 2);
   assert.equal(r.byComp.S.sum, 0);
   assert.equal(r.total.n, 3);
+});
+
+test("ageDecayFactor: base^(age_years), 1 when age unknown", () => {
+  const now = new Date("2026-09-18T00:00:00Z");
+  assert.equal(ageDecayFactor("", now, 0.9), 1);         // no cutoff → no decay
+  assert.equal(ageDecayFactor("2026-09", now, 0.9), 1);  // 0 months → 0.9^0 = 1
+  assert.ok(Math.abs(ageDecayFactor("2025-09", now, 0.9) - 0.9) < 1e-9); // 12mo → 0.9
+  assert.ok(ageDecayFactor("2024-09", now, 0.9) < 0.82); // 24mo → 0.81
+});
+
+test("aggregateDecayed/decayedRows: regress Δ toward 0 by age, raw kept", () => {
+  const now = new Date("2026-09-18T00:00:00Z");
+  const rows = [
+    { model: "old", effort: "", tier: "t", delta: 2, cutoff: "2024-09" },  // 24mo, heavy decay
+    { model: "new", effort: "", tier: "t", delta: 2, cutoff: "2026-09" },  // fresh, no decay
+    { model: "neg", effort: "", tier: "t", delta: -2, cutoff: "2024-09" }, // negative also toward 0
+  ];
+  const scored = decayedRows(aggregateDecayed(rows, 0, now, 0.9), 3, now);
+  const old = scored.find((r) => r.key === "old · t");
+  const fresh = scored.find((r) => r.key === "new · t");
+  const neg = scored.find((r) => r.key === "neg · t");
+  assert.equal(fresh.avg, 2);
+  assert.ok(Math.abs(fresh.decayedAvg - 2) < 1e-9);   // fresh unchanged
+  assert.ok(old.decayedAvg < 2 && old.decayedAvg > 1.6); // +2 shrunk toward 0
+  assert.ok(neg.decayedAvg > -2 && neg.decayedAvg < -1.6); // -2 also shrunk toward 0 (less negative)
 });
 
 // --- malformed / missing tolerance -----------------------------------------

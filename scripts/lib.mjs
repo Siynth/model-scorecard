@@ -10,7 +10,7 @@ export const CONFIG_FILE = join(homedir(), ".claude", "scorecard", "config.json"
 // Buckets with fewer than this many ratings are flagged low-confidence.
 export const MIN_N = 3;
 
-const DELTAS = new Set([-2, -1, 0, 1, 2]);
+const DELTAS = new Set([-3, -2, -1, 0, 1, 2, 3]);
 
 // --- config -----------------------------------------------------------------
 // Plugin-level defaults (customizable via `config`). effortScale is ordered
@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG = {
   effortDefault: "medium",
   defaultDepth: 0, // 0 = full model name; N = group at N segments
   minN: MIN_N,
+  ageDecayPerYear: 0.9, // multiplier per year of age for the `show --decayed` view
 };
 
 // Coerce a raw config into a coherent one; an empty scale means free-form
@@ -54,6 +55,8 @@ export function normalizeConfig(raw = {}) {
 
   c.defaultDepth = Number.isInteger(c.defaultDepth) && c.defaultDepth >= 0 ? c.defaultDepth : 0;
   c.minN = Number.isInteger(c.minN) && c.minN > 0 ? c.minN : MIN_N;
+  c.ageDecayPerYear = typeof c.ageDecayPerYear === "number" && c.ageDecayPerYear > 0 && c.ageDecayPerYear <= 1
+    ? c.ageDecayPerYear : DEFAULT_CONFIG.ageDecayPerYear;
   return c;
 }
 
@@ -227,6 +230,15 @@ export function ageTier(months) {
   return "stale";
 }
 
+// Staleness confidence factor in (0,1]: `base` compounded per year of age, so an
+// old rating is regressed TOWARD the neutral 0 (not penalized). 1 when age is
+// unknown (no cutoff) — an unknown-age rating is not decayed.
+export function ageDecayFactor(cutoff, now = new Date(), base = 0.9) {
+  const m = ageMonths(cutoff, now);
+  if (m == null) return 1;
+  return Math.pow(base, m / 12);
+}
+
 // --- argument parsing -------------------------------------------------------
 // Parse `--key value` pairs and bare positionals; booleanFlags consume no value.
 export function parseArgs(argv, booleanFlags = []) {
@@ -246,12 +258,12 @@ export function parseArgs(argv, booleanFlags = []) {
 }
 
 // --- logging ----------------------------------------------------------------
-// Δ must be an integer in -2..2; throws otherwise (no write). Note: Number("")
+// Δ must be an integer in -3..3; throws otherwise (no write). Note: Number("")
 // and Number(" ") coerce to 0, so blank input is guarded explicitly.
 export function validateDelta(v) {
-  if (v == null || String(v).trim() === "") throw new Error("--delta must be an integer in -2..2");
+  if (v == null || String(v).trim() === "") throw new Error("--delta must be an integer in -3..3");
   const d = Number(v);
-  if (!Number.isInteger(d) || !DELTAS.has(d)) throw new Error("--delta must be an integer in -2..2");
+  if (!Number.isInteger(d) || !DELTAS.has(d)) throw new Error("--delta must be an integer in -3..3");
   return d;
 }
 
@@ -392,6 +404,45 @@ export function weightedRows(buckets, minN = MIN_N, now = new Date()) {
       };
     })
     .sort((a, b) => b.weightedAvg - a.weightedAvg);
+}
+
+// --- age-decayed view -------------------------------------------------------
+// Same buckets as the default table, but each rating's Δ is shrunk toward 0 by
+// its age-decay factor (staleness = less trust in the rating, NOT a penalty).
+// Raw Δ is kept alongside the decayed value so the discount is visible.
+export function aggregateDecayed(rows, depth = 0, now = new Date(), base = 0.9) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const key = bucketKey(r, depth);
+    const b = buckets.get(key) || { sum: 0, sumDecayed: 0, n: 0, comp: {}, cutoff: "" };
+    b.sum += r.delta;
+    b.sumDecayed += r.delta * ageDecayFactor(r.cutoff, now, base);
+    b.n += 1;
+    if (r.complexity) b.comp[r.complexity] = (b.comp[r.complexity] || 0) + 1;
+    if (r.cutoff && r.cutoff > b.cutoff) b.cutoff = r.cutoff;
+    buckets.set(key, b);
+  }
+  return buckets;
+}
+
+// Decayed rows sorted by decayed avg desc.
+export function decayedRows(buckets, minN = MIN_N, now = new Date()) {
+  return [...buckets.entries()]
+    .map(([k, b]) => {
+      const age = ageMonths(b.cutoff, now);
+      return {
+        key: k,
+        avg: b.sum / b.n,
+        decayedAvg: b.sumDecayed / b.n,
+        n: b.n,
+        comp: b.comp,
+        lowConfidence: b.n < minN,
+        cutoff: b.cutoff || "",
+        ageMonths: age,
+        ageTier: ageTier(age),
+      };
+    })
+    .sort((a, b) => b.decayedAvg - a.decayedAvg);
 }
 
 // --- stacked depth × complexity report --------------------------------------

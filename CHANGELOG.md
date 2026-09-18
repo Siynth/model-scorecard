@@ -2,6 +2,28 @@
 
 All notable changes to model-scorecard. Format loosely follows Keep a Changelog.
 
+## [0.6.0] — 2026-09-18
+
+### Changed
+- **Δ scale widened from -2..+2 to -3..+3** (-3 far below … 0 met … +3 far
+  above). Forward-compatible — existing -2..2 rows stay valid; 0 = met unchanged.
+
+### Added
+- **`show --decayed`** — age-decayed view: each rating's Δ is regressed *toward
+  the neutral 0* by a per-year factor (`age-decay`, default 0.9), so a stale
+  rating is trusted less rather than penalized (a `+2` and a `-2` both shrink
+  toward 0; unknown-age ratings are untouched). Shows decayed `dΔ` beside raw avg.
+- **`age-decay` config key** — the per-year multiplier for `--decayed`, in
+  `(0,1]` (`1` = no decay).
+- **Family-first naming convention** documented: log `opus 5` / `sonnet 5.1` so
+  `--depth 1` rolls a family's versions under `opus`/`sonnet`. Grouping by a bare
+  generation number (which would mix capability tiers) is intentionally not a
+  built-in rollup.
+
+### Notes
+- Ranking stays per-(model × tier); `--global` remains a caveated coarse extra.
+- 64 tests (`node --test`), still zero runtime dependencies.
+
 ## [0.5.1] — 2026-09-18
 
 ### Changed

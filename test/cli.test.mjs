@@ -63,7 +63,7 @@ test("invalid delta: exits non-zero and writes nothing", () => {
   withTempHome((home, env) => {
     const r = run(["log", "--model", "opus", "--tier", "t", "--delta", "5"], env);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /-2\.\.2/);
+    assert.match(r.stderr, /-3\.\.3/);
     const dataFile = join(home, ".claude", "scorecard", "model_scorecard.jsonl");
     assert.equal(existsSync(dataFile), false, "no file should be written on rejection");
   });
@@ -238,5 +238,25 @@ test("log: bundled seed supplies cutoff for a known model with no date", () => {
     const r = run(["log", "--model", "gpt-4o", "--tier", "t", "--delta", "0"], env);
     assert.equal(r.code, 0);
     assert.match(r.stdout, /"cutoff":"2023-10"/); // from scripts/cutoffs.json
+  });
+});
+
+test("log: accepts the widened -3..3 scale", () => {
+  withTempHome((home, env) => {
+    assert.equal(run(["log", "--model", "m", "--tier", "t", "--delta", "3"], env).code, 0);
+    assert.equal(run(["log", "--model", "m", "--tier", "t", "--delta", "-3"], env).code, 0);
+    const r = run(["log", "--model", "m", "--tier", "t", "--delta", "4"], env); // still out of range
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /-3\.\.3/);
+  });
+});
+
+test("show --decayed: shows decayed + raw columns, regresses old ratings", () => {
+  withTempHome((home, env) => {
+    run(["log", "--model", "old", "--tier", "t", "--delta", "2", "--cutoff", "2020-01"], env);
+    const r = run(["show", "--decayed"], env);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^dΔ = age-decayed/m);
+    assert.match(r.stdout, /dΔ.*raw/); // both columns in header
   });
 });

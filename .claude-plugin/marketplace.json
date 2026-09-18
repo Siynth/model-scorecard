@@ -3,14 +3,14 @@
   "owner": { "name": "Allen" },
   "metadata": {
     "description": "Rate subagent models vs. expectation, per (model x tier).",
-    "version": "0.5.1"
+    "version": "0.6.0"
   },
   "plugins": [
     {
       "name": "model-scorecard",
       "source": "./",
-      "description": "Rate each subagent's output vs. EXPECTATION for that model/task (-2..+2); score is the average per (model x tier) — never a global rank. Free-form hierarchical model names, effort-weighted + stacked complexity views, model-age from knowledge cutoffs, customizable effort config, global data, portable pure-Node core.",
-      "version": "0.5.1"
+      "description": "Rate each subagent's output vs. EXPECTATION for that model/task (-3..+3); score is the average per (model x tier) — never a global rank. Free-form hierarchical family-first model names, effort-weighted + stacked + age-decayed views, model-age from knowledge cutoffs, customizable effort config, global data, portable pure-Node core.",
+      "version": "0.6.0"
     }
   ]
 }

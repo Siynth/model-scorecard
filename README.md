@@ -1,6 +1,6 @@
 # model-scorecard
 
-A tiny, dependency-free scorecard for rating subagent models. The orchestrator rates each subagent's output vs. the EXPECTATION for that model/task (-2..+2); the score is the average per **(model × tier)** — NEVER a global rank (a simple task for a light model is not a hard task for a strong one).
+A tiny, dependency-free scorecard for rating subagent models. The orchestrator rates each subagent's output vs. the EXPECTATION for that model/task (-3..+3); the score is the average per **(model × tier)** — NEVER a global rank (a simple task for a light model is not a hard task for a strong one).
 
 Pure Node, zero dependencies. The core is a single portable CLI, so the same tool works from Claude Code, Codex, OpenCode, a plain shell, or over MCP.
 
@@ -14,7 +14,7 @@ Pure Node, zero dependencies. The core is a single portable CLI, so the same too
 This ships the scripts with the plugin; commands resolve via `${CLAUDE_PLUGIN_ROOT}`.
 
 ## Slash commands (Claude Code)
-- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-2..2> [--cutoff <YYYY-MM>] --note "<expected vs got>"` — append one rating.
+- `/score-log --model <m> [--effort <e>] --tier <t> --task "<desc>" --complexity <S|M|L> --delta <-3..3> [--cutoff <YYYY-MM>] --note "<expected vs got>"` — append one rating.
 - `/score [--since <date>] [--until <date>] [--depth <N>] [--min-n <k>] [--csv] [--weighted] [--stacked]` — per (model × tier) average Δ, n, model age, complexity mix. `--weighted` = effort-weighted rollup; `--stacked` = model × complexity grid.
 - `/score-compare <A> <B> [C ...] [--global] [--by-complexity] [--by-age] [--depth <N>] [--since <date>] [--until <date>]` — models side by side per tier (or per complexity / per age); `--global` adds a coarse overall (mixes task types, use with care).
 - `/score-config [--effort-scale a,b,c] [--effort-floor <e>] [--effort-max <e>] [--effort-default <e>] [--default-depth <N>] [--min-n <k>] [--reset]` — view/change plugin config.
@@ -54,6 +54,8 @@ Names are also **hierarchical**: they split into ordered segments on space / `-`
 
 So depth 0 rates each variant on its own; depth 1 rolls the whole `5.6` family into one bucket. Truncated names keep their original punctuation (`gpt-5.6-sol` → `gpt-5.6`). The default depth is configurable (`config --default-depth`).
 
+**Naming convention — log family-first.** The identity that persists across a company's releases is the *family* (opus, sonnet, haiku, fable), not the version number — Anthropic alone runs `opus 5`, `sonnet 5`, `haiku 4.5`, `fable 5.1`, so the numbers don't line up across tiers. Log names family-first (`opus 5`, `sonnet 5.1`, `gpt-5.6 sol`) and `--depth 1` rolls a family's versions under `opus`/`sonnet`/`gpt-5.6` — a real lineage worth tracking — while keeping different families (which are different capability tiers) in their own buckets. Grouping by a bare generation number (merging `opus 5` with `sonnet 5`) mixes tiers and is intentionally not a built-in rollup; that is coarse territory like `--global`.
+
 ## Model age (knowledge cutoff)
 Each rating can carry a **cutoff date** so `show`/`compare` can report how *old* a model is — all computed locally at report time against today. There is deliberately **no provider API call**: knowledge cutoffs are published as prose (model cards / overview pages), not as a queryable field — the provider APIs only expose a model *mint* timestamp, not the cutoff — so wiring per-provider auth + network would break the zero-dep, offline design and still not yield cutoffs.
 
@@ -82,14 +84,16 @@ Global config at `~/.claude/scorecard/config.json` (same directory as the data �
 - `effort-default` — the effort `log` applies when `--effort` is omitted. This is the **plugin's** default, independent of any interface/agent default.
 - `default-depth` — hierarchy depth used by `show`/`compare` when `--depth` is not passed.
 - `min-n` — default low-confidence threshold.
+- `age-decay` — per-year multiplier for `show --decayed` (default `0.9`; must be in `(0,1]`, `1` = no decay).
 
 ## Δ scale (vs. what you expected of that model for that task)
--2 well below · -1 below · 0 met · +1 above · +2 well above. `0 = correctly tiered, not mediocre`. Bucket avg ~0 = correctly tiered; + = beats its tier; − = underperforms. Read WITHIN a bucket only. Buckets with fewer than `--min-n` ratings (default 3) are flagged `⚠ low-n` — indicative only.
+-3 far below · -2 well below · -1 below · 0 met · +1 above · +2 well above · +3 far above. `0 = correctly tiered, not mediocre`. Bucket avg ~0 = correctly tiered; + = beats its tier; − = underperforms. Read WITHIN a bucket only. Buckets with fewer than `--min-n` ratings (default 3) are flagged `⚠ low-n` — indicative only.
 
 ## Views
 Beyond the default per-(model × tier) table, `show` offers two rollups (mutually exclusive):
 - **`--weighted`** — folds the `@effort` variants of a model back into one `model · tier` bucket and reports an **effort-weighted** avg Δ: each rating is weighted by its effort rank (`minimal`=1 … `high`=4 on the default scale; off-scale/empty efforts weigh 1). Use it to ask "which model is best overall, crediting wins earned at higher effort", instead of reading each effort bucket separately.
 - **`--stacked`** — a grid crossing each bucket (row) with complexity S/M/L (columns) plus an `all` total, so you can read a family's standing across task sizes at a glance. Combine with `--depth` to stack whole families.
+- **`--decayed`** — the same per-bucket table, but each rating's Δ is regressed *toward the neutral 0* by an age-decay factor (`age-decay`^age_years). The semantic is **staleness = less trust in the rating**, not a penalty: a `+2` and a `−2` both shrink toward 0 as they age, and unknown-age ratings are left untouched. Shows the decayed `dΔ` next to the raw avg so the discount is visible.
 
 ## Data
 Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — persists across every project and platform). Malformed lines are skipped, not fatal; a missing file is reported gracefully.
@@ -98,10 +102,10 @@ Append-only JSONL at `~/.claude/scorecard/model_scorecard.jsonl` (global — per
 ```
 npm test        # or: node --test
 ```
-Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 60 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup and stacked grid), compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
+Pure logic lives in `scripts/lib.mjs` (no IO); `scripts/scorecard.mjs` is the CLI. 64 tests cover delta validation, effort/config resolution + effort weighting, model hierarchy/depth, model-age (cutoff parse/validate, name auto-detect, seed lookup, age tiers), aggregation (incl. weighted rollup, stacked grid, and age-decay), compare (per-tier + per-complexity + per-age + `--global`), CSV, and malformed/missing-file tolerance.
 
 ## Status
-v0.5.1. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical model names with `--depth`, effort-weighted + stacked-complexity views, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
+v0.6.0. Self-contained plugin (commands → `${CLAUDE_PLUGIN_ROOT}`), unified portable CLI, hierarchical family-first model names with `--depth`, effort-weighted + stacked-complexity + age-decayed views, a −3..+3 rating scale, model age from knowledge cutoffs (with a bundled seed), customizable effort config, tested (`node --test`), git-versioned, installable via marketplace manifest.
 
 ## License
 MIT — see [`LICENSE`](LICENSE).
